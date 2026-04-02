@@ -254,26 +254,15 @@ export async function registerRoutes(
         queryEmbedding = new Array(1536).fill(0);
       }
 
-      // Step 2: Hybrid search for relevant chunks from database
-      const chunkCount = await storage.getChunkCount();
+      // Step 2: Skip local DB chunk search (taxadvice DB has no chunks)
+      // All document search is handled via corpus DB in Step 2b below
       let chunks: any[] = [];
-      let contextText: string;
+      let contextText = "Đang tìm kiếm trong kho văn bản pháp luật...";
       let dbHasResults = false;
 
-      if (chunkCount > 0) {
-        chunks = await storage.hybridSearch(question, queryEmbedding, {
-          sac_thue,
-          limit: 12,
-        });
-        contextText = buildContextFromChunks(chunks);
-        dbHasResults = chunks.length > 0;
-      } else {
-        // Fallback to document-level search if no chunks exist
-        const docs = await storage.documentSemanticSearch(queryEmbedding, { sac_thue, limit: 5 });
-        dbHasResults = docs.length > 0;
-        contextText = dbHasResults
-          ? docs.map(d => `--- ${d.so_hieu}: ${d.ten} ---`).join("\n")
-          : "Không tìm thấy quy định phù hợp trong cơ sở dữ liệu.";
+      if (false) {
+        // Placeholder — local DB chunks not used
+        contextText = "";
       }
 
       // Step 2b: Corpus RAG — search chunks từ anchor documents
