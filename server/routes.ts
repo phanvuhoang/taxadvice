@@ -9,6 +9,7 @@ import {
   buildContextFromChunks, buildCitationsFromChunks,
   getQuickQAPrompt, getScenarioPrompt, getArticlePrompt,
   getTaxAdvicePrompt, getReportTopicPrompt,
+  searchWithPerplexity,
 } from "./ai";
 import { processDocument, processAllDocuments } from "./chunker";
 import { generatePDF } from "./pdf";
@@ -188,7 +189,7 @@ export async function registerRoutes(
     question: string;
     sac_thue?: string[];
     ai_model: "deepseek" | "anthropic";
-    promptBuilder: (context: string) => string;
+    promptBuilder: (context: string, internetContext?: string) => string;
     type: string;
     title: string;
     userId: number;
@@ -206,10 +207,11 @@ export async function registerRoutes(
         queryEmbedding = new Array(1536).fill(0);
       }
 
-      // Step 2: Hybrid search for relevant chunks
+      // Step 2: Hybrid search for relevant chunks from database
       const chunkCount = await storage.getChunkCount();
       let chunks: any[] = [];
       let contextText: string;
+      let dbHasResults = false;
 
       if (chunkCount > 0) {
         chunks = await storage.hybridSearch(question, queryEmbedding, {
@@ -217,21 +219,52 @@ export async function registerRoutes(
           limit: 12,
         });
         contextText = buildContextFromChunks(chunks);
+        dbHasResults = chunks.length > 0;
       } else {
         // Fallback to document-level search if no chunks exist
         const docs = await storage.documentSemanticSearch(queryEmbedding, { sac_thue, limit: 5 });
-        contextText = docs.length > 0
+        dbHasResults = docs.length > 0;
+        contextText = dbHasResults
           ? docs.map(d => `--- ${d.so_hieu}: ${d.ten} ---`).join("\n")
           : "Không tìm thấy quy định phù hợp trong cơ sở dữ liệu.";
       }
 
-      // Step 3: Build prompt and call LLM
-      const systemPrompt = promptBuilder(contextText);
+      // Step 2b: Perplexity internet research (fallback or supplement)
+      // - If DB has few results (< 3 chunks), also search internet for supplementary info
+      // - If DB has no results, internet search becomes primary research source
+      let internetContext: string | undefined;
+      let perplexityCitations: string[] = [];
+
+      if (process.env.PERPLEXITY_API_KEY) {
+        const shouldSearchInternet = !dbHasResults || chunks.length < 3;
+        if (shouldSearchInternet) {
+          try {
+            console.log(`[Perplexity] Searching internet for: ${question.slice(0, 80)}...`);
+            const pplxResult = await searchWithPerplexity(question);
+            if (pplxResult && pplxResult.answer) {
+              internetContext = pplxResult.answer;
+              perplexityCitations = pplxResult.citations || [];
+              console.log(`[Perplexity] Found ${perplexityCitations.length} citations`);
+            }
+          } catch (err) {
+            console.warn("Perplexity search failed (non-blocking):", (err as Error).message);
+          }
+        }
+      }
+
+      // Step 3: Build prompt with both DB context and internet context
+      const systemPrompt = promptBuilder(contextText, internetContext);
 
       // Set up SSE for streaming
       response.setHeader("Content-Type", "text/event-stream");
       response.setHeader("Cache-Control", "no-cache");
       response.setHeader("Connection", "keep-alive");
+
+      // Send source info to frontend
+      const sources: string[] = [];
+      if (dbHasResults) sources.push("database");
+      if (internetContext) sources.push("internet");
+      response.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
 
       let fullContent = "";
 
@@ -245,17 +278,31 @@ export async function registerRoutes(
         },
       });
 
-      // Step 4: Save output
-      const citations = buildCitationsFromChunks(chunks);
+      // Step 4: Save output with citations from both sources
+      const dbCitations = buildCitationsFromChunks(chunks);
+      // Add Perplexity web citations as a special citation type
+      const webCitations = perplexityCitations.map((url, i) => ({
+        document_id: 0,
+        so_hieu: `Web ${i + 1}`,
+        article_ref: url,
+        excerpt: "(Nguồn: internet - cần kiểm chứng)",
+      }));
+      const allCitations = [...dbCitations, ...webCitations];
+
       const output = await storage.createOutput({
         user_id: userId,
         type: type as any,
         title,
         question,
         content: fullContent,
-        citations,
+        citations: allCitations,
         status: "completed",
         ai_model,
+        metadata: {
+          sources,
+          perplexity_used: !!internetContext,
+          db_chunks_found: chunks.length,
+        },
       });
 
       response.write(`data: ${JSON.stringify({ type: "done", output })}\n\n`);

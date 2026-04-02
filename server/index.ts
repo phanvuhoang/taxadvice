@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { initDatabase } from "./db";
+import { initFileStorage } from "./file-storage";
 
 const app = express();
 const httpServer = createServer(app);
@@ -62,6 +63,10 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Initialize file storage directories
+  initFileStorage();
+  log("File storage initialized", "storage");
+
   // Initialize database tables
   try {
     await initDatabase();

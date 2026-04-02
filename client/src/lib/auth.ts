@@ -80,7 +80,14 @@ export async function authFetch(url: string, options?: RequestInit): Promise<Res
 }
 
 // SSE streaming fetch for AI endpoints
-export function streamFetch(url: string, body: any, onChunk: (text: string) => void, onDone: (output: any) => void, onError: (msg: string) => void) {
+export function streamFetch(
+  url: string,
+  body: any,
+  onChunk: (text: string) => void,
+  onDone: (output: any) => void,
+  onError: (msg: string) => void,
+  onSources?: (sources: string[]) => void
+) {
   const token = getToken();
   const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -125,6 +132,8 @@ export function streamFetch(url: string, body: any, onChunk: (text: string) => v
               onDone(data.output);
             } else if (data.type === "error") {
               onError(data.message);
+            } else if (data.type === "sources" && onSources) {
+              onSources(data.sources);
             }
           } catch {}
         }

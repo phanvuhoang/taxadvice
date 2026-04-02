@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Send, Download, Copy, Check } from "lucide-react";
+import { Loader2, Send, Download, Copy, Check, Database, Globe } from "lucide-react";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { SacThueSelect } from "@/components/sac-thue-select";
 import { AIModelSelect } from "@/components/ai-model-select";
@@ -37,6 +37,7 @@ export default function AIFeaturePage({
   const [output, setOutput] = useState<Output | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [sources, setSources] = useState<string[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -53,6 +54,7 @@ export default function AIFeaturePage({
     setContent("");
     setOutput(null);
     setError("");
+    setSources([]);
     setStreaming(true);
 
     const body: any = {
@@ -76,7 +78,8 @@ export default function AIFeaturePage({
       (msg) => {
         setError(msg);
         setStreaming(false);
-      }
+      },
+      (src) => setSources(src)
     );
   };
 
@@ -164,7 +167,23 @@ export default function AIFeaturePage({
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-medium">Kết quả</CardTitle>
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-base font-medium">Kết quả</CardTitle>
+                {sources.length > 0 && (
+                  <div className="flex gap-1">
+                    {sources.includes("database") && (
+                      <Badge variant="outline" className="text-[10px] gap-1 text-emerald-600 border-emerald-200 dark:border-emerald-800">
+                        <Database size={10} /> Cơ sở dữ liệu
+                      </Badge>
+                    )}
+                    {sources.includes("internet") && (
+                      <Badge variant="outline" className="text-[10px] gap-1 text-blue-600 border-blue-200 dark:border-blue-800">
+                        <Globe size={10} /> Internet
+                      </Badge>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="flex gap-1">
                 {content && (
                   <Button variant="ghost" size="sm" onClick={handleCopy} data-testid="btn-copy">

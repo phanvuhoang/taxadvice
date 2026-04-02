@@ -2,6 +2,95 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { Citation } from "@shared/schema";
 
+// ---- Perplexity Client (OpenAI-compatible) ----
+
+function getPerplexityClient(): OpenAI | null {
+  const key = process.env.PERPLEXITY_API_KEY;
+  if (!key) return null;
+  return new OpenAI({ apiKey: key, baseURL: "https://api.perplexity.ai" });
+}
+
+/**
+ * Search the internet via Perplexity Sonar when the local database
+ * doesn't contain enough information to answer a question.
+ * Returns the Perplexity answer text + citations array.
+ */
+export async function searchWithPerplexity(question: string): Promise<{
+  answer: string;
+  citations: string[];
+} | null> {
+  const client = getPerplexityClient();
+  if (!client) return null;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "sonar",
+      messages: [
+        {
+          role: "system",
+          content: `Bạn là chuyên gia thuế doanh nghiệp Việt Nam. Trả lời bằng tiếng Việt.
+Khi trích dẫn quy định, ghi rõ số hiệu văn bản, điều, khoản.
+TUYỆT ĐỐI KHÔNG bịa ra số hiệu văn bản hay quy định không tồn tại.
+Nếu không chắc chắn, nói rõ "thông tin tham khảo từ internet, cần kiểm chứng lại".`,
+        },
+        { role: "user", content: question },
+      ],
+    } as any);
+
+    const answer = response.choices[0]?.message?.content || "";
+    // Perplexity returns citations in the response object
+    const citations: string[] = (response as any).citations || [];
+
+    return { answer, citations };
+  } catch (err) {
+    console.error("Perplexity search error:", err);
+    return null;
+  }
+}
+
+/**
+ * Stream search via Perplexity Sonar.
+ */
+export async function streamPerplexitySearch(options: {
+  question: string;
+  onChunk: (text: string) => void;
+}): Promise<{ fullText: string; citations: string[] }> {
+  const client = getPerplexityClient();
+  if (!client) throw new Error("PERPLEXITY_API_KEY chưa được cấu hình");
+
+  let fullText = "";
+  let citations: string[] = [];
+
+  const stream = await client.chat.completions.create({
+    model: "sonar",
+    stream: true,
+    messages: [
+      {
+        role: "system",
+        content: `Bạn là chuyên gia thuế doanh nghiệp Việt Nam. Trả lời bằng tiếng Việt.
+Khi trích dẫn quy định, ghi rõ số hiệu văn bản, điều, khoản.
+TUYỆT ĐỐI KHÔNG bịa ra số hiệu văn bản hay quy định không tồn tại.
+Nếu không chắc chắn, nói rõ "thông tin tham khảo từ internet, cần kiểm chứng lại".`,
+      },
+      { role: "user", content: options.question },
+    ],
+  } as any);
+
+  for await (const chunk of stream) {
+    const text = chunk.choices[0]?.delta?.content || "";
+    if (text) {
+      fullText += text;
+      options.onChunk(text);
+    }
+    // Capture citations from the last chunk
+    if ((chunk as any).citations) {
+      citations = (chunk as any).citations;
+    }
+  }
+
+  return { fullText, citations };
+}
+
 // DeepSeek client (OpenAI-compatible API)
 function getDeepSeekClient(): OpenAI | null {
   const key = process.env.DEEPSEEK_API_KEY;
@@ -164,35 +253,51 @@ const BASE_SYSTEM_PROMPT = `Bạn là chuyên gia tư vấn thuế doanh nghiệ
 Bạn có kiến thức chuyên sâu về Luật Thuế TNDN, GTGT, TNCN, Thuế nhà thầu, Hóa đơn, và các quy định liên quan.
 
 NGUYÊN TẮC QUAN TRỌNG:
-1. CHỈ trả lời dựa trên các quy định được cung cấp trong phần "QUY ĐỊNH THAM CHIẾU" bên dưới.
-2. LUÔN trích dẫn chính xác số hiệu văn bản, điều, khoản, mục khi đề cập đến quy định.
-3. Nếu không tìm thấy quy định phù hợp, nói rõ: "Không tìm thấy quy định cụ thể trong cơ sở dữ liệu."
-4. TUYỆT ĐỐI KHÔNG bịa ra số hiệu văn bản, điều khoản hay quy định không có trong dữ liệu.
-5. Trả lời bằng tiếng Việt, chuyên nghiệp và dễ hiểu.
-6. Khi trích dẫn, sử dụng định dạng: "Theo [Điều X, Khoản Y] [Số hiệu văn bản], ..."`;
+1. ƯU TIÊN trả lời dựa trên các quy định trong phần "QUY ĐỊNH THAM CHIẾU TỪ DATABASE" bên dưới.
+2. Nếu có phần "THÔNG TIN BỔ SUNG TỪ INTERNET", đây là tham khảo bổ sung - cần phân biệt rõ nguồn.
+3. LUÔN trích dẫn chính xác số hiệu văn bản, điều, khoản, mục khi đề cập đến quy định.
+4. Nếu không tìm thấy quy định phù hợp trong cả hai nguồn, nói rõ: "Không tìm thấy quy định cụ thể."
+5. TUYỆT ĐỐI KHÔNG bịa ra số hiệu văn bản, điều khoản hay quy định không có trong dữ liệu.
+6. Trả lời bằng tiếng Việt, chuyên nghiệp và dễ hiểu.
+7. Khi trích dẫn từ database, dùng: "Theo [Điều X, Khoản Y] [Số hiệu văn bản], ..."
+8. Khi dùng thông tin từ internet, ghi rõ: "(Nguồn: internet - cần kiểm chứng)".
+9. Thông tin từ database luôn đáng tin hơn thông tin từ internet.`;
 
-export function getQuickQAPrompt(context: string): string {
-  return `${BASE_SYSTEM_PROMPT}
+export function getQuickQAPrompt(context: string, internetContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}
 
-QUY ĐỊNH THAM CHIẾU:
-${context}
+QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
+${context}`;
 
-Hãy trả lời câu hỏi thuế một cách ngắn gọn, chính xác, có trích dẫn điều khoản cụ thể.
+  if (internetContext) {
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  prompt += `\n\nHãy trả lời câu hỏi thuế một cách ngắn gọn, chính xác, có trích dẫn điều khoản cụ thể.
 Format trả lời:
 ## Trả lời
 [Câu trả lời ngắn gọn]
 
 ## Căn cứ pháp lý
-[Liệt kê các điều khoản được trích dẫn]`;
+[Liệt kê các điều khoản được trích dẫn]
+
+## Nguồn tham khảo
+[Nếu có sử dụng thông tin từ internet, liệt kê ở đây với ghi chú cần kiểm chứng]`;
+
+  return prompt;
 }
 
-export function getScenarioPrompt(context: string): string {
-  return `${BASE_SYSTEM_PROMPT}
+export function getScenarioPrompt(context: string, internetContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}
 
-QUY ĐỊNH THAM CHIẾU:
-${context}
+QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
+${context}`;
 
-Hãy phân tích tình huống thuế theo cấu trúc:
+  if (internetContext) {
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  prompt += `\n\nHãy phân tích tình huống thuế theo cấu trúc:
 ## Phân tích tình huống
 [Tóm tắt vấn đề cần giải quyết]
 
@@ -204,17 +309,23 @@ Hãy phân tích tình huống thuế theo cấu trúc:
 
 ## Lưu ý
 [Các điểm cần chú ý thêm]`;
+
+  return prompt;
 }
 
-export function getArticlePrompt(context: string): string {
-  return `${BASE_SYSTEM_PROMPT}
+export function getArticlePrompt(context: string, internetContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}
 
-QUY ĐỊNH THAM CHIẾU:
-${context}
+QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
+${context}`;
 
-Hãy viết một bài phân tích chuyên sâu về chủ đề thuế được yêu cầu. Bài viết cần:
+  if (internetContext) {
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  prompt += `\n\nHãy viết một bài phân tích chuyên sâu về chủ đề thuế được yêu cầu. Bài viết cần:
 1. Có cấu trúc rõ ràng với các mục chính
-2. Trích dẫn chính xác các điều khoản pháp luật
+2. Trích dẫn chính xác các điều khoản pháp luật (ưu tiên từ database)
 3. Có ví dụ minh họa thực tế
 4. Có phần lưu ý quan trọng
 5. Dài khoảng 1500-3000 từ
@@ -236,15 +347,21 @@ Format:
 
 ## V. Kết luận
 [Tổng kết]`;
+
+  return prompt;
 }
 
-export function getTaxAdvicePrompt(context: string): string {
-  return `${BASE_SYSTEM_PROMPT}
+export function getTaxAdvicePrompt(context: string, internetContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}
 
-QUY ĐỊNH THAM CHIẾU:
-${context}
+QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
+${context}`;
 
-Hãy viết một thư tư vấn thuế chuyên nghiệp (professional tax advice letter) dài khoảng 1-2 trang A4.
+  if (internetContext) {
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  prompt += `\n\nHãy viết một thư tư vấn thuế chuyên nghiệp (professional tax advice letter) dài khoảng 1-2 trang A4.
 
 Format:
 # THƯ TƯ VẤN THUẾ
@@ -269,23 +386,31 @@ Format:
 
 ---
 *Lưu ý: Thư tư vấn này dựa trên các quy định pháp luật hiện hành và thông tin được cung cấp. Doanh nghiệp nên tham khảo thêm ý kiến của cơ quan thuế quản lý trực tiếp.*`;
+
+  return prompt;
 }
 
-export function getReportTopicPrompt(context: string, topicName: string, reportTitle: string): string {
-  return `${BASE_SYSTEM_PROMPT}
+export function getReportTopicPrompt(context: string, topicName: string, reportTitle: string, internetContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}
 
-QUY ĐỊNH THAM CHIẾU:
-${context}
+QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
+${context}`;
 
-Bạn đang viết phần "${topicName}" trong báo cáo phân tích tác động thuế: "${reportTitle}".
+  if (internetContext) {
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  prompt += `\n\nBạn đang viết phần "${topicName}" trong báo cáo phân tích tác động thuế: "${reportTitle}".
 
 Hãy viết nội dung phân tích chuyên sâu cho phần này, bao gồm:
-1. Các quy định thuế liên quan (trích dẫn chính xác)
+1. Các quy định thuế liên quan (trích dẫn chính xác, ưu tiên từ database)
 2. Phân tích tác động cụ thể
 3. Ví dụ minh họa nếu phù hợp
 4. Khuyến nghị
 
 Viết khoảng 500-1000 từ, chuyên nghiệp và có trích dẫn.`;
+
+  return prompt;
 }
 
 export { buildContextFromChunks };
