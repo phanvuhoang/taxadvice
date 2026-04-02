@@ -18,6 +18,9 @@ import {
   registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema,
   quickQASchema, scenarioSchema, articleSchema, reportSchema, topicSchema, taxAdviceSchema,
 } from "@shared/schema";
+import {
+  corpusPool, searchCorpus, getDocumentBySoHieu, getDocumentChunks, getAnchorDocuments, stripHtml,
+} from "./corpus";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -234,7 +237,35 @@ export async function registerRoutes(
           : "Không tìm thấy quy định phù hợp trong cơ sở dữ liệu.";
       }
 
-      // Step 2b: Perplexity internet research (fallback or supplement)
+      // Step 2b: Corpus (dbvntax) search — augment AI context with legal documents
+      let corpusContext = "";
+      if (process.env.CORPUS_DATABASE_URL) {
+        try {
+          const corpusResults = await searchCorpus(question, {
+            importanceMax: 2,
+            conHieuLuc: true,
+            limit: 5,
+            sacThue: sac_thue,
+          });
+          if (corpusResults.length > 0) {
+            const lines = corpusResults.map(r => {
+              const doc = r.doc as any;
+              const tomTat = doc.tom_tat
+                ? `\nTóm tắt: ${doc.tom_tat}`
+                : doc.ket_luan
+                ? `\nKết luận: ${doc.ket_luan}`
+                : "";
+              const link = doc.link_tvpl || doc.link_nguon ? `\nLink: ${doc.link_tvpl || doc.link_nguon}` : "";
+              return `[${doc.so_hieu}] ${doc.ten}${tomTat}${link}`;
+            });
+            corpusContext = lines.join("\n\n");
+          }
+        } catch (err) {
+          console.warn("Corpus search failed (non-blocking):", (err as Error).message);
+        }
+      }
+
+      // Step 2c: Perplexity internet research (fallback or supplement)
       // - If DB has few results (< 3 chunks), also search internet for supplementary info
       // - If DB has no results, internet search becomes primary research source
       let internetContext: string | undefined;
@@ -257,8 +288,12 @@ export async function registerRoutes(
         }
       }
 
-      // Step 3: Build prompt with both DB context and internet context
-      const systemPrompt = promptBuilder(contextText, internetContext);
+      // Step 3: Build prompt with DB context, corpus context, and internet context
+      let finalContextText = contextText;
+      if (corpusContext) {
+        finalContextText += `\n\n## Văn bản pháp luật liên quan:\n${corpusContext}`;
+      }
+      const systemPrompt = promptBuilder(finalContextText, internetContext);
 
       // Set up SSE for streaming
       response.setHeader("Content-Type", "text/event-stream");
@@ -612,6 +647,61 @@ export async function registerRoutes(
     }
   });
 
+  // ========== CORPUS ROUTES ==========
+
+  app.get("/api/corpus/search", requireAuth, async (req, res) => {
+    try {
+      const q = String(req.query.q || "").trim();
+      if (!q) return res.status(400).json({ message: "Thiếu tham số q" });
+
+      const sacThue = req.query.sacThue
+        ? String(req.query.sacThue).split(",").map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const loai = req.query.loai
+        ? String(req.query.loai).split(",").map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const limit = Math.min(parseInt(String(req.query.limit || "10")) || 10, 50);
+      const importanceMax = req.query.importanceMax
+        ? parseInt(String(req.query.importanceMax))
+        : undefined;
+      const anchorOnly = req.query.anchorOnly === "true";
+
+      const results = await searchCorpus(q, { sacThue, loai, limit, importanceMax, anchorOnly });
+      res.json({ results, total: results.length, query: q });
+    } catch (err: any) {
+      console.error("Corpus search error:", err);
+      res.status(500).json({ message: "Lỗi tìm kiếm corpus" });
+    }
+  });
+
+  app.get("/api/corpus/document/:soHieu", requireAuth, async (req, res) => {
+    try {
+      const soHieu = decodeURIComponent(req.params.soHieu);
+      const document = await getDocumentBySoHieu(soHieu);
+      if (!document) return res.status(404).json({ message: "Không tìm thấy văn bản" });
+
+      const chunks = await getDocumentChunks(document.id, { limit: 100 });
+      const dieuChunks = chunks.filter(c => c.chunk_level === "dieu");
+      res.json({ document, chunks: dieuChunks });
+    } catch (err: any) {
+      console.error("Corpus document error:", err);
+      res.status(500).json({ message: "Lỗi tải văn bản corpus" });
+    }
+  });
+
+  app.get("/api/corpus/anchors", requireAuth, async (req, res) => {
+    try {
+      const sacThue = req.query.sacThue
+        ? String(req.query.sacThue).split(",").map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const documents = await getAnchorDocuments(sacThue);
+      res.json({ documents });
+    } catch (err: any) {
+      console.error("Corpus anchors error:", err);
+      res.status(500).json({ message: "Lỗi tải anchor documents" });
+    }
+  });
+
   // ========== HEALTH CHECK ==========
   app.get("/api/health", async (_req, res) => {
     let dbStatus = "unknown";
@@ -624,14 +714,19 @@ export async function registerRoutes(
     } catch (err) {
       dbStatus = `error: ${(err as Error).message}`;
     }
+
+    const corpusDbStatus = await corpusPool.query("SELECT 1").then(() => "ok").catch(e => e.message);
+
     res.json({
       status: "ok",
       timestamp: new Date().toISOString(),
       db: dbStatus,
+      corpus_db: corpusDbStatus,
       admin_email: adminEmail,
       admin_exists: adminExists,
       env_check: {
         DATABASE_URL: !!process.env.DATABASE_URL,
+        CORPUS_DATABASE_URL: !!process.env.CORPUS_DATABASE_URL,
         JWT_SECRET: !!process.env.JWT_SECRET,
         DEEPSEEK_API_KEY: !!process.env.DEEPSEEK_API_KEY,
         ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
