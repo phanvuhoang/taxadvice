@@ -76,7 +76,7 @@ export interface DocumentChunk {
 export interface Output {
   id: number;
   user_id: number;
-  type: "quick_qa" | "scenario" | "article" | "report" | "tax_advice";
+  type: "quick_qa" | "scenario" | "article" | "report" | "tax_advice" | "press_article";
   title: string;
   question: string | null;
   content: string | null;
@@ -93,6 +93,7 @@ export interface Citation {
   so_hieu: string;
   article_ref: string;
   excerpt: string;
+  url?: string;
 }
 
 // Report topics
@@ -115,6 +116,22 @@ export interface PasswordReset {
   expires_at: string;
   used: boolean;
   created_at: string;
+}
+
+// Report Frame for industry/company analysis
+export interface ReportFrame {
+  id: string;       // "S1", "C1" etc.
+  name: string;
+  enabled: boolean;
+  subTopics: string[];
+}
+
+// Gamma generation result
+export interface GammaResult {
+  generationId: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  gammaUrl?: string;
+  pptxUrl?: string;
 }
 
 // ---- Zod Schemas for validation ----
@@ -143,18 +160,28 @@ export const quickQASchema = z.object({
   question: z.string().min(1, "Câu hỏi không được để trống"),
   sac_thue: z.array(z.string()).optional(),
   ai_model: z.enum(["deepseek", "anthropic"]).default("deepseek"),
+  style_references: z.array(z.string()).max(5).optional(),
 });
 
 export const scenarioSchema = z.object({
   scenario: z.string().min(1, "Tình huống không được để trống"),
   sac_thue: z.array(z.string()).optional(),
   ai_model: z.enum(["deepseek", "anthropic"]).default("deepseek"),
+  style_references: z.array(z.string()).max(5).optional(),
 });
 
 export const articleSchema = z.object({
   topic: z.string().min(1, "Chủ đề không được để trống"),
   sac_thue: z.array(z.string()).optional(),
   ai_model: z.enum(["deepseek", "anthropic"]).default("deepseek"),
+  style_references: z.array(z.string()).max(5).optional(),
+});
+
+export const pressArticleSchema = z.object({
+  topic: z.string().min(1, "Chủ đề không được để trống"),
+  sac_thue: z.array(z.string()).optional(),
+  ai_model: z.enum(["deepseek", "anthropic"]).default("deepseek"),
+  style_references: z.array(z.string()).max(5).optional(),
 });
 
 export const reportSchema = z.object({
@@ -163,6 +190,15 @@ export const reportSchema = z.object({
   industry: z.string().optional(),
   company: z.string().optional(),
   ai_model: z.enum(["deepseek", "anthropic"]).default("deepseek"),
+  topics: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    enabled: z.boolean().default(true),
+    subTopics: z.array(z.string()),
+    parentId: z.string().nullable().optional(),
+  })).optional(),
+  sac_thue: z.array(z.string()).optional(),
+  style_references: z.array(z.string()).max(5).optional(),
 });
 
 export const topicSchema = z.object({
@@ -177,6 +213,7 @@ export const taxAdviceSchema = z.object({
   company_name: z.string().optional(),
   sac_thue: z.array(z.string()).optional(),
   ai_model: z.enum(["deepseek", "anthropic"]).default("deepseek"),
+  style_references: z.array(z.string()).max(5).optional(),
 });
 
 // Sac thue options
@@ -201,6 +238,7 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export type QuickQAInput = z.infer<typeof quickQASchema>;
 export type ScenarioInput = z.infer<typeof scenarioSchema>;
 export type ArticleInput = z.infer<typeof articleSchema>;
+export type PressArticleInput = z.infer<typeof pressArticleSchema>;
 export type ReportInput = z.infer<typeof reportSchema>;
 export type TopicInput = z.infer<typeof topicSchema>;
 export type TaxAdviceInput = z.infer<typeof taxAdviceSchema>;

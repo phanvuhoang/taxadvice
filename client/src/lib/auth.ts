@@ -86,7 +86,8 @@ export function streamFetch(
   onChunk: (text: string) => void,
   onDone: (output: any) => void,
   onError: (msg: string) => void,
-  onSources?: (sources: string[]) => void
+  onSources?: (sources: string[]) => void,
+  onProgress?: (current: number, total: number, currentTopic?: string) => void
 ) {
   const token = getToken();
   const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
@@ -134,6 +135,8 @@ export function streamFetch(
               onError(data.message);
             } else if (data.type === "sources" && onSources) {
               onSources(data.sources);
+            } else if (data.type === "progress" && onProgress) {
+              onProgress(data.current, data.total, data.currentTopic);
             }
           } catch {}
         }

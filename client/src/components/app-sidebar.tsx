@@ -1,18 +1,20 @@
 import { Link, useLocation } from "wouter";
 import {
   Search, MessageSquareText, FileText, BarChart3,
-  ScrollText, FolderOpen, BookOpen, Settings, LogOut,
-  Shield, Moon, Sun, ChevronDown
+  ScrollText, FolderOpen, BookOpen, Shield, Moon, Sun,
+  LogOut, Newspaper, ChevronLeft, ChevronRight
 } from "lucide-react";
 import { getUser, clearAuth, isAdmin } from "@/lib/auth";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { useSidebar } from "@/lib/sidebar-context";
 
 const navItems = [
   { path: "/", label: "Trang chủ", icon: Search, group: "main" },
   { path: "/quick-qa", label: "Tra cứu nhanh", icon: Search, group: "features" },
   { path: "/scenario", label: "Tình huống thuế", icon: MessageSquareText, group: "features" },
   { path: "/article", label: "Bài phân tích", icon: FileText, group: "features" },
+  { path: "/press-article", label: "Bài viết báo", icon: Newspaper, group: "features" },
   { path: "/report", label: "Báo cáo chuyên sâu", icon: BarChart3, group: "features" },
   { path: "/tax-advice", label: "Thư tư vấn", icon: ScrollText, group: "features" },
   { path: "/outputs", label: "Kết quả đã lưu", icon: FolderOpen, group: "data" },
@@ -27,7 +29,7 @@ export function AppSidebar() {
   const [location] = useLocation();
   const user = getUser();
   const [isDark, setIsDark] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const { collapsed, toggleSidebar } = useSidebar();
 
   useEffect(() => {
     const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -50,17 +52,25 @@ export function AppSidebar() {
       "fixed left-0 top-0 h-screen bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col z-50 transition-all duration-200",
       collapsed ? "w-16" : "w-60"
     )}>
-      {/* Logo */}
-      <div className="flex items-center gap-2 px-4 py-4 border-b border-sidebar-border">
+      {/* Logo + collapse button */}
+      <div className="flex items-center gap-2 px-3 py-4 border-b border-sidebar-border">
         <div className="w-8 h-8 rounded-lg bg-sidebar-primary flex items-center justify-center flex-shrink-0">
           <span className="text-sidebar-primary-foreground font-bold text-sm">TA</span>
         </div>
         {!collapsed && (
-          <div className="overflow-hidden">
+          <div className="overflow-hidden flex-1">
             <h1 className="text-sm font-semibold tracking-tight truncate">TaxAdvice</h1>
             <p className="text-[10px] text-sidebar-foreground/60 truncate">Tư vấn Thuế VN</p>
           </div>
         )}
+        <button
+          onClick={toggleSidebar}
+          className="p-1 rounded-md text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors flex-shrink-0"
+          data-testid="btn-toggle-sidebar"
+          title={collapsed ? "Mở rộng sidebar" : "Thu gọn sidebar"}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
       </div>
 
       {/* Navigation */}
@@ -81,6 +91,7 @@ export function AppSidebar() {
                   ? "bg-sidebar-accent text-sidebar-primary font-medium"
                   : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
               )}
+              title={collapsed ? item.label : undefined}
             >
               <item.icon size={16} className="flex-shrink-0" />
               {!collapsed && <span className="truncate">{item.label}</span>}
@@ -103,6 +114,7 @@ export function AppSidebar() {
                   ? "bg-sidebar-accent text-sidebar-primary font-medium"
                   : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
               )}
+              title={collapsed ? item.label : undefined}
             >
               <item.icon size={16} className="flex-shrink-0" />
               {!collapsed && <span className="truncate">{item.label}</span>}
@@ -127,6 +139,7 @@ export function AppSidebar() {
                       ? "bg-sidebar-accent text-sidebar-primary font-medium"
                       : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
                   )}
+                  title={collapsed ? item.label : undefined}
                 >
                   <item.icon size={16} className="flex-shrink-0" />
                   {!collapsed && <span className="truncate">{item.label}</span>}
@@ -143,6 +156,7 @@ export function AppSidebar() {
           onClick={toggleDark}
           className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent/50 w-full transition-colors"
           data-testid="toggle-dark-mode"
+          title={collapsed ? (isDark ? "Chế độ sáng" : "Chế độ tối") : undefined}
         >
           {isDark ? <Sun size={16} /> : <Moon size={16} />}
           {!collapsed && <span>{isDark ? "Chế độ sáng" : "Chế độ tối"}</span>}
@@ -161,6 +175,11 @@ export function AppSidebar() {
           )}
           {!collapsed && (
             <button onClick={handleLogout} className="p-1 hover:text-destructive transition-colors" data-testid="btn-logout">
+              <LogOut size={14} />
+            </button>
+          )}
+          {collapsed && (
+            <button onClick={handleLogout} className="p-1 hover:text-destructive transition-colors" data-testid="btn-logout-collapsed">
               <LogOut size={14} />
             </button>
           )}

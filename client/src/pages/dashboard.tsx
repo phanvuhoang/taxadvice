@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, MessageSquareText, FileText, BarChart3, ScrollText, Clock, ArrowRight } from "lucide-react";
+import { Search, MessageSquareText, FileText, BarChart3, ScrollText, Clock, ArrowRight, Newspaper } from "lucide-react";
 import { authFetch } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 
@@ -11,6 +11,7 @@ const features = [
   { path: "/quick-qa", label: "Tra cứu nhanh", desc: "Hỏi đáp về quy định thuế, trích dẫn chính xác điều khoản", icon: Search, color: "text-blue-600 dark:text-blue-400" },
   { path: "/scenario", label: "Tình huống thuế", desc: "Phân tích tình huống thuế cụ thể với căn cứ pháp lý", icon: MessageSquareText, color: "text-emerald-600 dark:text-emerald-400" },
   { path: "/article", label: "Bài phân tích", desc: "Tạo bài viết phân tích chuyên sâu về chủ đề thuế", icon: FileText, color: "text-amber-600 dark:text-amber-400" },
+  { path: "/press-article", label: "Bài viết báo", desc: "Tạo bài viết báo có storytelling, ví dụ thực tế, ngôn ngữ dễ hiểu cho độc giả phổ thông", icon: Newspaper, color: "text-cyan-600 dark:text-cyan-400" },
   { path: "/report", label: "Báo cáo chuyên sâu", desc: "Báo cáo tác động thuế theo ngành hoặc công ty", icon: BarChart3, color: "text-purple-600 dark:text-purple-400" },
   { path: "/tax-advice", label: "Thư tư vấn", desc: "Soạn thư tư vấn thuế chuyên nghiệp (1-2 trang A4)", icon: ScrollText, color: "text-rose-600 dark:text-rose-400" },
 ];
@@ -19,6 +20,7 @@ const typeLabels: Record<string, string> = {
   quick_qa: "Tra cứu",
   scenario: "Tình huống",
   article: "Bài viết",
+  press_article: "Bài báo",
   report: "Báo cáo",
   tax_advice: "Tư vấn",
 };

@@ -10,6 +10,7 @@ export default function ArticlePage() {
       apiEndpoint="/api/ai/article"
       inputLabel="Chủ đề bài viết"
       inputField="topic"
+      showStyleRefs
     />
   );
 }

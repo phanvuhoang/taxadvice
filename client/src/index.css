@@ -152,6 +152,27 @@
 .markdown-content th { @apply border border-border px-3 py-2 bg-muted text-left font-semibold text-sm; }
 .markdown-content td { @apply border border-border px-3 py-2 text-sm; }
 
+/* Citation reference styles */
+.citation-ref {
+  @apply text-primary font-semibold no-underline;
+  font-size: 0.75em;
+  vertical-align: super;
+  line-height: 0;
+  cursor: pointer;
+}
+.citation-ref:hover {
+  @apply underline;
+}
+
+/* Progress bar animation */
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.progress-bar-animate {
+  /* smooth transition is handled inline */
+}
+
 /* Streaming text cursor */
 .streaming-cursor::after {
   content: '▊';

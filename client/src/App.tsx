@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { isAuthenticated } from "@/lib/auth";
 import { AppSidebar } from "@/components/app-sidebar";
+import { SidebarProvider, useSidebar } from "@/lib/sidebar-context";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
 import RegisterPage from "@/pages/register";
@@ -15,6 +16,7 @@ import DashboardPage from "@/pages/dashboard";
 import QuickQAPage from "@/pages/quick-qa";
 import ScenarioPage from "@/pages/scenario";
 import ArticlePage from "@/pages/article";
+import PressArticlePage from "@/pages/press-article";
 import ReportPage from "@/pages/report";
 import TaxAdvicePage from "@/pages/tax-advice";
 import OutputsPage from "@/pages/outputs";
@@ -23,13 +25,14 @@ import DocumentsPage from "@/pages/documents";
 import AdminPage from "@/pages/admin";
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
+  const { collapsed } = useSidebar();
   if (!isAuthenticated()) {
     return <Redirect to="/login" />;
   }
   return (
     <div className="flex min-h-screen">
       <AppSidebar />
-      <main className="flex-1 ml-60 p-6 max-w-5xl">
+      <main className={`flex-1 p-6 max-w-5xl transition-all duration-200 ${collapsed ? "ml-16" : "ml-60"}`}>
         <Component />
       </main>
     </div>
@@ -50,6 +53,7 @@ function AppRouter() {
       <Route path="/quick-qa">{() => <ProtectedRoute component={QuickQAPage} />}</Route>
       <Route path="/scenario">{() => <ProtectedRoute component={ScenarioPage} />}</Route>
       <Route path="/article">{() => <ProtectedRoute component={ArticlePage} />}</Route>
+      <Route path="/press-article">{() => <ProtectedRoute component={PressArticlePage} />}</Route>
       <Route path="/report">{() => <ProtectedRoute component={ReportPage} />}</Route>
       <Route path="/tax-advice">{() => <ProtectedRoute component={TaxAdvicePage} />}</Route>
       <Route path="/outputs">{() => <ProtectedRoute component={OutputsPage} />}</Route>
@@ -67,9 +71,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router hook={useHashLocation}>
-          <AppRouter />
-        </Router>
+        <SidebarProvider>
+          <Router hook={useHashLocation}>
+            <AppRouter />
+          </Router>
+        </SidebarProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

@@ -52,11 +52,12 @@ export async function initDatabase() {
       )
     `);
 
+    // Create outputs table with expanded type constraint including press_article
     await client.query(`
       CREATE TABLE IF NOT EXISTS outputs (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES app_users(id) ON DELETE CASCADE,
-        type VARCHAR(50) NOT NULL CHECK (type IN ('quick_qa', 'scenario', 'article', 'report', 'tax_advice')),
+        type VARCHAR(50) NOT NULL,
         title VARCHAR(500),
         question TEXT,
         content TEXT,
@@ -119,6 +120,29 @@ export async function initDatabase() {
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON document_chunks(document_id)`, "idx_chunks_document_id");
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_chunks_tsvector ON document_chunks USING GIN(tsvector_content)`, "idx_chunks_tsvector");
     await safeQuery(client, `CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON document_chunks USING ivfflat(embedding vector_cosine_ops) WITH (lists = 50)`, "idx_chunks_embedding");
+
+    // Add gamma_generation_id and gamma_url columns to outputs table if they don't exist
+    await safeQuery(client, `
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'outputs' AND column_name = 'gamma_generation_id'
+        ) THEN
+          ALTER TABLE outputs ADD COLUMN gamma_generation_id VARCHAR(255);
+        END IF;
+      END $$
+    `, "gamma_generation_id column");
+
+    await safeQuery(client, `
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'outputs' AND column_name = 'gamma_url'
+        ) THEN
+          ALTER TABLE outputs ADD COLUMN gamma_url TEXT;
+        END IF;
+      END $$
+    `, "gamma_url column");
 
     // Create or update default admin — always sync from env vars
     const adminEmail = process.env.ADMIN_EMAIL || "admin@taxadvice.vn";

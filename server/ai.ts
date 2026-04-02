@@ -249,6 +249,15 @@ export function buildCitationsFromChunks(chunks: Array<{ document_id?: number; c
     }));
 }
 
+const CITATION_INSTRUCTION = `
+HƯỚNG DẪN TRÍCH DẪN (BẮT BUỘC):
+- Đánh số tất cả trích dẫn theo format [1], [2], [3]... trong nội dung bài viết.
+- Cuối bài liệt kê đầy đủ tất cả nguồn trích dẫn theo số thứ tự dưới dạng:
+  ## Nguồn tham khảo
+  [1] Tên văn bản, điều khoản, URL nếu có
+  [2] ...
+- Chỉ đánh số những nguồn thực sự được trích dẫn trong bài.`;
+
 const BASE_SYSTEM_PROMPT = `Bạn là chuyên gia tư vấn thuế doanh nghiệp Việt Nam với 30 năm kinh nghiệm tại Big 4.
 Bạn có kiến thức chuyên sâu về Luật Thuế TNDN, GTGT, TNCN, Thuế nhà thầu, Hóa đơn, và các quy định liên quan.
 
@@ -261,9 +270,10 @@ NGUYÊN TẮC QUAN TRỌNG:
 6. Trả lời bằng tiếng Việt, chuyên nghiệp và dễ hiểu.
 7. Khi trích dẫn từ database, dùng: "Theo [Điều X, Khoản Y] [Số hiệu văn bản], ..."
 8. Khi dùng thông tin từ internet, ghi rõ: "(Nguồn: internet - cần kiểm chứng)".
-9. Thông tin từ database luôn đáng tin hơn thông tin từ internet.`;
+9. Thông tin từ database luôn đáng tin hơn thông tin từ internet.
+${CITATION_INSTRUCTION}`;
 
-export function getQuickQAPrompt(context: string, internetContext?: string): string {
+export function getQuickQAPrompt(context: string, internetContext?: string, styleContext?: string): string {
   let prompt = `${BASE_SYSTEM_PROMPT}
 
 QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
@@ -273,21 +283,26 @@ ${context}`;
     prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
   }
 
+  if (styleContext) {
+    prompt += `\n\nTHAM KHẢO PHONG CÁCH VIẾT TỪ CÁC BÀI MẪU:\n${styleContext}`;
+  }
+
   prompt += `\n\nHãy trả lời câu hỏi thuế một cách ngắn gọn, chính xác, có trích dẫn điều khoản cụ thể.
 Format trả lời:
 ## Trả lời
-[Câu trả lời ngắn gọn]
+[Câu trả lời ngắn gọn, dùng [1], [2]... khi trích dẫn]
 
 ## Căn cứ pháp lý
 [Liệt kê các điều khoản được trích dẫn]
 
 ## Nguồn tham khảo
-[Nếu có sử dụng thông tin từ internet, liệt kê ở đây với ghi chú cần kiểm chứng]`;
+[1] [Tên văn bản - số hiệu - URL nếu có]
+[2] ...`;
 
   return prompt;
 }
 
-export function getScenarioPrompt(context: string, internetContext?: string): string {
+export function getScenarioPrompt(context: string, internetContext?: string, styleContext?: string): string {
   let prompt = `${BASE_SYSTEM_PROMPT}
 
 QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
@@ -295,6 +310,10 @@ ${context}`;
 
   if (internetContext) {
     prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  if (styleContext) {
+    prompt += `\n\nTHAM KHẢO PHONG CÁCH VIẾT TỪ CÁC BÀI MẪU:\n${styleContext}`;
   }
 
   prompt += `\n\nHãy phân tích tình huống thuế theo cấu trúc:
@@ -302,18 +321,22 @@ ${context}`;
 [Tóm tắt vấn đề cần giải quyết]
 
 ## Căn cứ pháp lý
-[Trích dẫn các quy định liên quan, ghi rõ số hiệu văn bản, điều, khoản]
+[Trích dẫn các quy định liên quan, ghi rõ số hiệu văn bản, điều, khoản. Dùng [1], [2]... cho mỗi nguồn]
 
 ## Hướng xử lý
 [Đề xuất cách xử lý cụ thể]
 
 ## Lưu ý
-[Các điểm cần chú ý thêm]`;
+[Các điểm cần chú ý thêm]
+
+## Nguồn tham khảo
+[1] [Tên văn bản - số hiệu - URL nếu có]
+[2] ...`;
 
   return prompt;
 }
 
-export function getArticlePrompt(context: string, internetContext?: string): string {
+export function getArticlePrompt(context: string, internetContext?: string, styleContext?: string): string {
   let prompt = `${BASE_SYSTEM_PROMPT}
 
 QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
@@ -323,9 +346,13 @@ ${context}`;
     prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
   }
 
+  if (styleContext) {
+    prompt += `\n\nTHAM KHẢO PHONG CÁCH VIẾT TỪ CÁC BÀI MẪU:\n${styleContext}`;
+  }
+
   prompt += `\n\nHãy viết một bài phân tích chuyên sâu về chủ đề thuế được yêu cầu. Bài viết cần:
 1. Có cấu trúc rõ ràng với các mục chính
-2. Trích dẫn chính xác các điều khoản pháp luật (ưu tiên từ database)
+2. Trích dẫn chính xác các điều khoản pháp luật với format [1], [2]... (ưu tiên từ database)
 3. Có ví dụ minh họa thực tế
 4. Có phần lưu ý quan trọng
 5. Dài khoảng 1500-3000 từ
@@ -337,7 +364,7 @@ Format:
 [Liệt kê các văn bản quy phạm pháp luật liên quan]
 
 ## II. Nội dung phân tích
-[Phân tích chi tiết từng vấn đề, có trích dẫn]
+[Phân tích chi tiết từng vấn đề, có trích dẫn [1], [2]...]
 
 ## III. Ví dụ thực tế
 [Ví dụ minh họa cụ thể với số liệu]
@@ -346,12 +373,16 @@ Format:
 [Các điểm cần chú ý]
 
 ## V. Kết luận
-[Tổng kết]`;
+[Tổng kết]
+
+## Nguồn tham khảo
+[1] [Tên văn bản - số hiệu - URL nếu có]
+[2] ...`;
 
   return prompt;
 }
 
-export function getTaxAdvicePrompt(context: string, internetContext?: string): string {
+export function getTaxAdvicePrompt(context: string, internetContext?: string, styleContext?: string): string {
   let prompt = `${BASE_SYSTEM_PROMPT}
 
 QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
@@ -359,6 +390,10 @@ ${context}`;
 
   if (internetContext) {
     prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  if (styleContext) {
+    prompt += `\n\nTHAM KHẢO PHONG CÁCH VIẾT TỪ CÁC BÀI MẪU:\n${styleContext}`;
   }
 
   prompt += `\n\nHãy viết một thư tư vấn thuế chuyên nghiệp (professional tax advice letter) dài khoảng 1-2 trang A4.
@@ -376,7 +411,7 @@ Format:
 [Tóm tắt lại scenario/câu hỏi]
 
 ## II. Căn cứ pháp lý
-[Trích dẫn các quy định liên quan]
+[Trích dẫn các quy định liên quan, dùng [1], [2]... cho mỗi nguồn]
 
 ## III. Ý kiến tư vấn
 [Phân tích và đưa ra ý kiến tư vấn chuyên môn]
@@ -384,13 +419,70 @@ Format:
 ## IV. Khuyến nghị
 [Đề xuất hướng xử lý cụ thể]
 
+## Nguồn tham khảo
+[1] [Tên văn bản - số hiệu - URL nếu có]
+[2] ...
+
 ---
 *Lưu ý: Thư tư vấn này dựa trên các quy định pháp luật hiện hành và thông tin được cung cấp. Doanh nghiệp nên tham khảo thêm ý kiến của cơ quan thuế quản lý trực tiếp.*`;
 
   return prompt;
 }
 
-export function getReportTopicPrompt(context: string, topicName: string, reportTitle: string, internetContext?: string): string {
+export function getPressArticlePrompt(context: string, internetContext?: string, styleContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}
+
+Bạn đang viết bài báo theo phong cách báo chí — kể chuyện sinh động, ngôn ngữ gần gũi, dễ hiểu với đại chúng.
+
+QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
+${context}`;
+
+  if (internetContext) {
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+  }
+
+  if (styleContext) {
+    prompt += `\n\nTHAM KHẢO PHONG CÁCH VIẾT TỪ CÁC BÀI MẪU:\n${styleContext}`;
+  }
+
+  prompt += `\n\nHãy viết bài báo về chủ đề thuế theo phong cách báo chí, storytelling:
+1. Mở đầu bằng một tình huống/câu chuyện thực tế để thu hút độc giả
+2. Giải thích quy định thuế bằng ngôn ngữ đơn giản, dễ hiểu
+3. Dùng ví dụ cụ thể, con số minh họa
+4. Trích dẫn với format [1], [2]... khi đề cập quy định
+5. Kết thúc với thông điệp rõ ràng, actionable
+6. Giọng văn thân thiện, không quá hàn lâm
+7. Dài 800-1500 từ
+
+Format:
+# [Tiêu đề hấp dẫn]
+
+[Lead paragraph — câu chuyện mở đầu]
+
+## [Tiêu đề phần 1]
+[Nội dung, trích dẫn [1], [2]...]
+
+## [Tiêu đề phần 2]
+...
+
+## Kết luận
+[Thông điệp và hành động gợi ý]
+
+## Nguồn tham khảo
+[1] [Tên văn bản - số hiệu - URL nếu có]
+[2] ...`;
+
+  return prompt;
+}
+
+export function getReportTopicPrompt(
+  context: string,
+  topicName: string,
+  reportTitle: string,
+  subTopics?: string[],
+  internetContext?: string,
+  styleContext?: string
+): string {
   let prompt = `${BASE_SYSTEM_PROMPT}
 
 QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
@@ -400,15 +492,28 @@ ${context}`;
     prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
   }
 
-  prompt += `\n\nBạn đang viết phần "${topicName}" trong báo cáo phân tích tác động thuế: "${reportTitle}".
+  if (styleContext) {
+    prompt += `\n\nTHAM KHẢO PHONG CÁCH VIẾT TỪ CÁC BÀI MẪU:\n${styleContext}`;
+  }
 
-Hãy viết nội dung phân tích chuyên sâu cho phần này, bao gồm:
-1. Các quy định thuế liên quan (trích dẫn chính xác, ưu tiên từ database)
+  prompt += `\n\nBạn đang viết phần "${topicName}" trong báo cáo phân tích tác động thuế: "${reportTitle}".`;
+
+  if (subTopics && subTopics.length > 0) {
+    prompt += `\n\nPhần này bao gồm các tiểu mục sau:\n${subTopics.map((st, i) => `${i + 1}. ${st}`).join("\n")}`;
+    prompt += `\n\nHãy viết nội dung đầy đủ cho từng tiểu mục trên, sử dụng format heading ### cho mỗi tiểu mục.`;
+  }
+
+  prompt += `\n\nHãy viết nội dung phân tích chuyên sâu cho phần này, bao gồm:
+1. Các quy định thuế liên quan (trích dẫn chính xác với [1], [2]..., ưu tiên từ database)
 2. Phân tích tác động cụ thể
 3. Ví dụ minh họa nếu phù hợp
 4. Khuyến nghị
 
-Viết khoảng 500-1000 từ, chuyên nghiệp và có trích dẫn.`;
+Viết khoảng 800-1500 từ, chuyên nghiệp và có trích dẫn.
+
+## Nguồn tham khảo
+[1] [Tên văn bản - số hiệu - URL nếu có]
+[2] ...`;
 
   return prompt;
 }

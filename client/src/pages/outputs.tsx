@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Trash2, FileText, Download, Eye } from "lucide-react";
+import { Trash2, FileText, Loader2 } from "lucide-react";
 import { authFetch } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
@@ -15,6 +15,7 @@ const typeLabels: Record<string, string> = {
   quick_qa: "Tra cứu nhanh",
   scenario: "Tình huống thuế",
   article: "Bài phân tích",
+  press_article: "Bài viết báo",
   report: "Báo cáo chuyên sâu",
   tax_advice: "Thư tư vấn",
 };
@@ -85,7 +86,10 @@ export default function OutputsPage() {
                     {new Date(o.created_at).toLocaleDateString("vi-VN")}
                   </span>
                   {o.status === "processing" && (
-                    <Badge variant="secondary" className="text-[10px] animate-pulse">Đang xử lý</Badge>
+                    <Badge variant="secondary" className="text-[10px] flex items-center gap-1">
+                      <Loader2 size={9} className="animate-spin" />
+                      Đang xử lý
+                    </Badge>
                   )}
                   <Button
                     variant="ghost" size="sm" className="h-7 px-2 opacity-0 group-hover:opacity-100 text-destructive"

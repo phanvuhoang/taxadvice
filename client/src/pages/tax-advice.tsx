@@ -11,6 +11,7 @@ export default function TaxAdvicePage() {
       inputLabel="Tình huống cần tư vấn"
       inputField="scenario"
       showClientFields
+      showStyleRefs
     />
   );
 }

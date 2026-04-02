@@ -9,14 +9,17 @@ import {
   generateEmbedding, callLLM, streamLLM,
   buildContextFromChunks, buildCitationsFromChunks,
   getQuickQAPrompt, getScenarioPrompt, getArticlePrompt,
-  getTaxAdvicePrompt, getReportTopicPrompt,
+  getTaxAdvicePrompt, getReportTopicPrompt, getPressArticlePrompt,
   searchWithPerplexity,
 } from "./ai";
 import { processDocument, processAllDocuments } from "./chunker";
-import { generatePDF } from "./pdf";
+import { generateDOCX } from "./docx";
+import { getDefaultFrame } from "./report-frames";
+import { createGammaPresentation, checkGammaStatus } from "./gamma";
 import {
   registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema,
-  quickQASchema, scenarioSchema, articleSchema, reportSchema, topicSchema, taxAdviceSchema,
+  quickQASchema, scenarioSchema, articleSchema, pressArticleSchema,
+  reportSchema, topicSchema, taxAdviceSchema,
 } from "@shared/schema";
 import {
   corpusPool, searchCorpus, searchCorpusChunks, getDocumentBySoHieu, getDocumentChunks, getAnchorDocuments, stripHtml,
@@ -214,35 +217,160 @@ export async function registerRoutes(
 
   // ========== EXPORT ROUTES ==========
 
+  // DOCX export — primary export format
+  app.get("/api/outputs/:id/export/docx", requireAuth, async (req, res) => {
+    try {
+      const output = await storage.getOutputById(parseInt(String(req.params.id)));
+      if (!output) return res.status(404).json({ message: "Không tìm thấy" });
+
+      const docxBuffer = await generateDOCX(output);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="taxadvice-${output.id}.docx"`);
+      res.send(docxBuffer);
+    } catch (err) {
+      console.error("DOCX export error:", err);
+      res.status(400).json({ message: "Lỗi xuất Word" });
+    }
+  });
+
+  // PDF export — redirect to DOCX for backward compatibility
   app.get("/api/outputs/:id/export/pdf", requireAuth, async (req, res) => {
     try {
       const output = await storage.getOutputById(parseInt(String(req.params.id)));
       if (!output) return res.status(404).json({ message: "Không tìm thấy" });
 
-      const pdfBuffer = await generatePDF(output);
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename="taxadvice-${output.id}.pdf"`);
-      res.send(pdfBuffer);
+      // Redirect to DOCX endpoint
+      res.redirect(307, `/api/outputs/${output.id}/export/docx`);
     } catch (err) {
-      console.error("PDF export error:", err);
-      res.status(400).json({ message: "Lỗi xuất PDF" });
+      console.error("PDF/DOCX export redirect error:", err);
+      res.status(400).json({ message: "Lỗi xuất tài liệu" });
+    }
+  });
+
+  // ========== GAMMA ROUTES ==========
+
+  // POST /api/outputs/:id/gamma — start Gamma generation
+  app.post("/api/outputs/:id/gamma", requireAuth, async (req, res) => {
+    try {
+      const outputId = parseInt(String(req.params.id));
+      const output = await storage.getOutputById(outputId);
+      if (!output) return res.status(404).json({ message: "Không tìm thấy" });
+      if (!output.content) return res.status(400).json({ message: "Output chưa có nội dung" });
+
+      const numCards = req.body.numCards || Math.min(30, Math.max(5, Math.floor(output.content.length / 800)));
+
+      const generationId = await createGammaPresentation(
+        output.title || "Báo cáo thuế",
+        output.content,
+        numCards
+      );
+
+      // Save generationId to output metadata
+      const currentMeta = output.metadata || {};
+      await storage.updateOutput(outputId, {
+        metadata: {
+          ...currentMeta,
+          gamma_generation_id: generationId,
+          gamma_status: "processing",
+        },
+      });
+
+      res.json({ generationId, status: "processing" });
+    } catch (err: any) {
+      console.error("Gamma start error:", err);
+      res.status(400).json({ message: err.message || "Lỗi tạo Gamma slide" });
+    }
+  });
+
+  // GET /api/outputs/:id/gamma/status — check Gamma generation status
+  app.get("/api/outputs/:id/gamma/status", requireAuth, async (req, res) => {
+    try {
+      const outputId = parseInt(String(req.params.id));
+      const output = await storage.getOutputById(outputId);
+      if (!output) return res.status(404).json({ message: "Không tìm thấy" });
+
+      const generationId = output.metadata?.gamma_generation_id;
+      if (!generationId) {
+        return res.status(404).json({ message: "Chưa bắt đầu tạo Gamma" });
+      }
+
+      const result = await checkGammaStatus(generationId);
+
+      // Update metadata if completed
+      if (result.status === "completed" && result.gammaUrl) {
+        const currentMeta = output.metadata || {};
+        await storage.updateOutput(outputId, {
+          metadata: {
+            ...currentMeta,
+            gamma_status: "completed",
+            gamma_url: result.gammaUrl,
+            gamma_pptx_url: result.pptxUrl,
+          },
+        });
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("Gamma status error:", err);
+      res.status(400).json({ message: err.message || "Lỗi kiểm tra trạng thái Gamma" });
     }
   });
 
   // ========== AI ROUTES ==========
 
-  // Helper: search + generate
+  /**
+   * Fetch and extract text content from a URL for style references.
+   */
+  async function fetchStyleContent(url: string): Promise<string> {
+    try {
+      const response = await fetch(url, {
+        headers: { "User-Agent": "TaxAdvice/1.0" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) return "";
+      const html = await response.text();
+      // Strip HTML and return first 3000 chars
+      return stripHtml(html).slice(0, 3000);
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Build style context from style_references (URLs or text).
+   */
+  async function buildStyleContext(styleRefs?: string[]): Promise<string> {
+    if (!styleRefs || styleRefs.length === 0) return "";
+
+    const parts: string[] = [];
+    for (const ref of styleRefs.slice(0, 5)) {
+      if (ref.startsWith("http://") || ref.startsWith("https://")) {
+        const content = await fetchStyleContent(ref);
+        if (content) {
+          parts.push(`--- Bài mẫu từ ${ref} ---\n${content}`);
+        }
+      } else {
+        // Direct text
+        parts.push(`--- Bài mẫu ---\n${ref.slice(0, 3000)}`);
+      }
+    }
+
+    return parts.join("\n\n");
+  }
+
+  // Helper: search + generate with anchor-first search
   async function searchAndGenerate(options: {
     question: string;
     sac_thue?: string[];
     ai_model: "deepseek" | "anthropic";
-    promptBuilder: (context: string, internetContext?: string) => string;
+    promptBuilder: (context: string, internetContext?: string, styleContext?: string) => string;
     type: string;
     title: string;
     userId: number;
     res: any;
+    style_references?: string[];
   }) {
-    const { question, sac_thue, ai_model, promptBuilder, type, title, userId, res: response } = options;
+    const { question, sac_thue, ai_model, promptBuilder, type, title, userId, res: response, style_references } = options;
 
     try {
       // Step 1: Generate embedding for the question
@@ -265,19 +393,22 @@ export async function registerRoutes(
         contextText = "";
       }
 
-      // Step 2b: Corpus RAG — search chunks từ anchor documents
+      // Step 2b: Corpus RAG — ANCHOR-FIRST search (Feature 1)
+      // Priority: search anchor documents first; only use Perplexity if corpus has < 3 chunks
       let corpusContext = "";
+      let corpusChunkCount = 0;
       if (process.env.CORPUS_DATABASE_URL) {
         try {
           // Ưu tiên chunks (RAG thật) từ anchor documents
-          const chunks = await searchCorpusChunks(question, {
+          const corpusChunks = await searchCorpusChunks(question, {
             sacThue: sac_thue,
             limit: 8,
             anchorOnly: true,
           });
 
-          if (chunks.length > 0) {
-            const chunkLines = chunks.map((c, i) => {
+          if (corpusChunks.length > 0) {
+            corpusChunkCount = corpusChunks.length;
+            const chunkLines = corpusChunks.map((c, i) => {
               const ref = c.dieu_so
                 ? ` — ${c.dieu_so}${c.dieu_ten ? `: ${c.dieu_ten}` : ""}`
                 : c.header_path ? ` — ${c.header_path}` : "";
@@ -286,7 +417,7 @@ export async function registerRoutes(
             });
             corpusContext = chunkLines.join("\n\n");
           } else {
-            // Fallback: document-level search nếu không có chunks match
+            // Fallback: document-level search if no chunk matches
             const docResults = await searchCorpus(question, {
               importanceMax: 2,
               conHieuLuc: true,
@@ -301,24 +432,30 @@ export async function registerRoutes(
                 return `[${doc.so_hieu}] ${doc.ten}${tomTat}${link}`;
               });
               corpusContext = lines.join("\n\n");
+              // Doc-level results are less reliable; don't count as full corpus hits
+              corpusChunkCount = 0;
             }
+          }
+
+          // Feature 1: set dbHasResults if corpusContext is non-empty
+          if (corpusContext && corpusContext.length > 0) {
+            dbHasResults = true;
           }
         } catch (err) {
           console.warn("Corpus search failed (non-blocking):", (err as Error).message);
         }
       }
 
-      // Step 2c: Perplexity internet research (fallback or supplement)
-      // - If DB has few results (< 3 chunks), also search internet for supplementary info
-      // - If DB has no results, internet search becomes primary research source
+      // Step 2c: Perplexity internet research — ONLY if corpus has < 3 chunks or very short context
+      // Feature 1: anchor-first — only use Perplexity as fallback
       let internetContext: string | undefined;
       let perplexityCitations: string[] = [];
 
       if (process.env.PERPLEXITY_API_KEY) {
-        const shouldSearchInternet = !dbHasResults || chunks.length < 3;
+        const shouldSearchInternet = !dbHasResults || corpusChunkCount < 3 || corpusContext.length < 200;
         if (shouldSearchInternet) {
           try {
-            console.log(`[Perplexity] Searching internet for: ${question.slice(0, 80)}...`);
+            console.log(`[Perplexity] Corpus insufficient (${corpusChunkCount} chunks, ${corpusContext.length} chars), searching internet for: ${question.slice(0, 80)}...`);
             const pplxResult = await searchWithPerplexity(question);
             if (pplxResult && pplxResult.answer) {
               internetContext = pplxResult.answer;
@@ -328,15 +465,20 @@ export async function registerRoutes(
           } catch (err) {
             console.warn("Perplexity search failed (non-blocking):", (err as Error).message);
           }
+        } else {
+          console.log(`[Corpus] Sufficient results (${corpusChunkCount} chunks, ${corpusContext.length} chars) — skipping Perplexity`);
         }
       }
+
+      // Step 2d: Build style context from references
+      const styleContext = await buildStyleContext(style_references);
 
       // Step 3: Build prompt with DB context, corpus context, and internet context
       let finalContextText = contextText;
       if (corpusContext) {
         finalContextText += `\n\n## Văn bản pháp luật liên quan:\n${corpusContext}`;
       }
-      const systemPrompt = promptBuilder(finalContextText, internetContext);
+      const systemPrompt = promptBuilder(finalContextText, internetContext, styleContext || undefined);
 
       // Set up SSE for streaming
       response.setHeader("Content-Type", "text/event-stream");
@@ -345,7 +487,7 @@ export async function registerRoutes(
 
       // Send source info to frontend
       const sources: string[] = [];
-      if (dbHasResults) sources.push("database");
+      if (dbHasResults) sources.push("corpus");
       if (internetContext) sources.push("internet");
       response.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
 
@@ -369,6 +511,7 @@ export async function registerRoutes(
         so_hieu: `Web ${i + 1}`,
         article_ref: url,
         excerpt: "(Nguồn: internet - cần kiểm chứng)",
+        url,
       }));
       const allCitations = [...dbCitations, ...webCitations];
 
@@ -385,6 +528,7 @@ export async function registerRoutes(
           sources,
           perplexity_used: !!internetContext,
           db_chunks_found: chunks.length,
+          corpus_chunks_found: corpusChunkCount,
         },
       });
 
@@ -416,6 +560,7 @@ export async function registerRoutes(
         title: data.question.slice(0, 100),
         userId: req.user!.id,
         res,
+        style_references: data.style_references,
       });
     } catch (err: any) {
       if (err.name === "ZodError") return res.status(400).json({ message: err.errors[0]?.message });
@@ -436,6 +581,7 @@ export async function registerRoutes(
         title: `Tình huống: ${data.scenario.slice(0, 80)}`,
         userId: req.user!.id,
         res,
+        style_references: data.style_references,
       });
     } catch (err: any) {
       if (err.name === "ZodError") return res.status(400).json({ message: err.errors[0]?.message });
@@ -456,10 +602,62 @@ export async function registerRoutes(
         title: data.topic.slice(0, 100),
         userId: req.user!.id,
         res,
+        style_references: data.style_references,
       });
     } catch (err: any) {
       if (err.name === "ZodError") return res.status(400).json({ message: err.errors[0]?.message });
       res.status(400).json({ message: err.message });
+    }
+  });
+
+  // Press article generation (Feature 7)
+  app.post("/api/ai/press-article", requireAuth, async (req, res) => {
+    try {
+      const data = pressArticleSchema.parse(req.body);
+      await searchAndGenerate({
+        question: data.topic,
+        sac_thue: data.sac_thue,
+        ai_model: data.ai_model,
+        promptBuilder: getPressArticlePrompt,
+        type: "press_article",
+        title: `Bài báo: ${data.topic.slice(0, 80)}`,
+        userId: req.user!.id,
+        res,
+        style_references: data.style_references,
+      });
+    } catch (err: any) {
+      if (err.name === "ZodError") return res.status(400).json({ message: err.errors[0]?.message });
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  // Fetch URL content for style reference (Feature 8)
+  app.post("/api/ai/fetch-style", requireAuth, async (req, res) => {
+    try {
+      const { url } = req.body;
+      if (!url || typeof url !== "string") {
+        return res.status(400).json({ message: "URL không hợp lệ" });
+      }
+
+      if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        return res.status(400).json({ message: "Chỉ hỗ trợ URL http/https" });
+      }
+
+      const fetchResponse = await fetch(url, {
+        headers: { "User-Agent": "TaxAdvice/1.0" },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!fetchResponse.ok) {
+        return res.status(400).json({ message: `Không thể tải URL (HTTP ${fetchResponse.status})` });
+      }
+
+      const html = await fetchResponse.text();
+      const text = stripHtml(html).slice(0, 5000);
+
+      res.json({ url, content: text, length: text.length });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Lỗi tải URL" });
     }
   });
 
@@ -480,6 +678,7 @@ export async function registerRoutes(
         title: `Tư vấn: ${data.scenario.slice(0, 80)}`,
         userId: req.user!.id,
         res,
+        style_references: data.style_references,
       });
     } catch (err: any) {
       if (err.name === "ZodError") return res.status(400).json({ message: err.errors[0]?.message });
@@ -500,7 +699,11 @@ export async function registerRoutes(
         question: data.description,
         status: "processing",
         ai_model: data.ai_model,
-        metadata: { industry: data.industry, company: data.company },
+        metadata: {
+          industry: data.industry,
+          company: data.company,
+          progress: { current: 0, total: 0, currentTopic: "" },
+        },
       });
 
       res.json({ output, message: "Báo cáo đang được tạo trong nền" });
@@ -525,6 +728,26 @@ export async function registerRoutes(
     }
   });
 
+  // ========== REPORT FRAMES ==========
+
+  // GET /api/report-frames/:type — get default frame (industry/company/both)
+  app.get("/api/report-frames/:type", requireAuth, async (req, res) => {
+    try {
+      const type = req.params.type as "industry" | "company" | "both";
+      if (!["industry", "company", "both"].includes(type)) {
+        return res.status(400).json({ message: "type phải là industry, company, hoặc both" });
+      }
+
+      const industry = req.query.industry ? String(req.query.industry) : undefined;
+      const company = req.query.company ? String(req.query.company) : undefined;
+      const frame = getDefaultFrame(type, industry, company);
+
+      res.json({ frame, type });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Lỗi tải frame" });
+    }
+  });
+
   // ========== REPORT TOPICS ==========
 
   app.get("/api/reports/:id/topics", requireAuth, async (req, res) => {
@@ -546,6 +769,37 @@ export async function registerRoutes(
         sort_order: data.sort_order,
       });
       res.json(topic);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  // Batch create topics from frame (Feature 6)
+  app.post("/api/reports/:id/topics/batch", requireAuth, async (req, res) => {
+    try {
+      const outputId = parseInt(String(req.params.id));
+      const output = await storage.getOutputById(outputId);
+      if (!output) return res.status(404).json({ message: "Không tìm thấy báo cáo" });
+
+      const { topics } = req.body;
+      if (!Array.isArray(topics)) {
+        return res.status(400).json({ message: "topics phải là mảng" });
+      }
+
+      const created = [];
+      for (let i = 0; i < topics.length; i++) {
+        const t = topics[i];
+        if (!t.name) continue;
+        const topic = await storage.createTopic({
+          output_id: outputId,
+          name: t.name,
+          parent_id: t.parent_id || null,
+          sort_order: t.sort_order ?? i,
+        });
+        created.push(topic);
+      }
+
+      res.json({ created, count: created.length });
     } catch (err: any) {
       res.status(400).json({ message: err.message });
     }
@@ -584,22 +838,27 @@ export async function registerRoutes(
       // Update status
       await storage.updateTopic(topicId, { status: "processing" });
 
-      // Search for relevant content
-      let queryEmbedding: number[];
-      try {
-        queryEmbedding = await generateEmbedding(topic.name);
-      } catch {
-        queryEmbedding = new Array(1536).fill(0);
-      }
+      // Search corpus for relevant content
+      let contextText = "Không tìm thấy quy định cụ thể.";
 
-      const chunkCount = await storage.getChunkCount();
-      let contextText: string;
+      if (process.env.CORPUS_DATABASE_URL) {
+        try {
+          const corpusChunks = await searchCorpusChunks(topic.name, {
+            limit: 10,
+            anchorOnly: true,
+          });
 
-      if (chunkCount > 0) {
-        const chunks = await storage.hybridSearch(topic.name, queryEmbedding, { limit: 10 });
-        contextText = buildContextFromChunks(chunks);
-      } else {
-        contextText = "Không tìm thấy quy định cụ thể.";
+          if (corpusChunks.length > 0) {
+            const chunkLines = corpusChunks.map((c, i) => {
+              const ref = c.dieu_so ? ` — ${c.dieu_so}${c.dieu_ten ? `: ${c.dieu_ten}` : ""}` : "";
+              const link = c.link_tvpl ? `\n   🔗 ${c.link_tvpl}` : "";
+              return `[${i+1}] ${c.so_hieu}${ref}\n${c.text_content.slice(0, 800)}${link}`;
+            });
+            contextText = chunkLines.join("\n\n");
+          }
+        } catch (err) {
+          console.warn("Corpus search for topic failed:", (err as Error).message);
+        }
       }
 
       // Generate content
@@ -776,6 +1035,8 @@ export async function registerRoutes(
         OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
         PERPLEXITY_API_KEY: !!process.env.PERPLEXITY_API_KEY,
         SMTP_HOST: !!process.env.SMTP_HOST,
+        GAMMA_API_KEY: !!process.env.GAMMA_API_KEY,
+        GAMMA_FOLDER_ID: !!process.env.GAMMA_FOLDER_ID,
       },
     });
   });
@@ -783,73 +1044,145 @@ export async function registerRoutes(
   return httpServer;
 }
 
-// Background report processing
+// Background report processing (Feature 6 + Feature 10)
 async function processReportInBackground(outputId: number, data: any) {
   try {
-    const topics = await storage.getTopicsByOutputId(outputId);
+    let topicFrames = data.topics as Array<{
+      id: string;
+      name: string;
+      enabled: boolean;
+      subTopics: string[];
+    }> | undefined;
 
-    if (topics.length === 0) {
-      // Auto-generate topics if none exist
-      const defaultTopics = [
-        "Tổng quan quy định thuế liên quan",
-        "Phân tích tác động thuế TNDN",
-        "Phân tích tác động thuế GTGT",
-        "Rủi ro thuế và khuyến nghị",
-      ];
+    const existingTopics = await storage.getTopicsByOutputId(outputId);
 
-      for (let i = 0; i < defaultTopics.length; i++) {
-        await storage.createTopic({
-          output_id: outputId,
-          name: defaultTopics[i],
-          sort_order: i,
-        });
+    if (existingTopics.length === 0) {
+      // Use topics from request data or fallback to defaults
+      if (topicFrames && topicFrames.length > 0) {
+        const enabledTopics = topicFrames.filter(t => t.enabled !== false);
+        for (let i = 0; i < enabledTopics.length; i++) {
+          await storage.createTopic({
+            output_id: outputId,
+            name: enabledTopics[i].name,
+            sort_order: i,
+          });
+        }
+      } else {
+        // Auto-generate topics if none exist
+        const defaultTopics = [
+          "Tổng quan quy định thuế liên quan",
+          "Phân tích tác động thuế TNDN",
+          "Phân tích tác động thuế GTGT",
+          "Rủi ro thuế và khuyến nghị",
+        ];
+
+        for (let i = 0; i < defaultTopics.length; i++) {
+          await storage.createTopic({
+            output_id: outputId,
+            name: defaultTopics[i],
+            sort_order: i,
+          });
+        }
+        topicFrames = defaultTopics.map((name, i) => ({
+          id: `T${i}`,
+          name,
+          enabled: true,
+          subTopics: [],
+        }));
       }
     }
 
     // Generate content for each topic
     const allTopics = await storage.getTopicsByOutputId(outputId);
+    const total = allTopics.length;
     const contents: string[] = [];
 
-    for (const topic of allTopics) {
+    // Build Table of Contents
+    const tocLines = allTopics.map((t, i) => `${i + 1}. ${t.name}`);
+    const tocSection = `## Mục lục\n\n${tocLines.join("\n")}\n\n---\n\n`;
+
+    for (let i = 0; i < allTopics.length; i++) {
+      const topic = allTopics[i];
       try {
+        // Update progress in metadata
+        await storage.updateOutput(outputId, {
+          metadata: {
+            industry: data.industry,
+            company: data.company,
+            progress: {
+              current: i,
+              total,
+              currentTopic: topic.name,
+            },
+          },
+        });
+
         await storage.updateTopic(topic.id, { status: "processing" });
 
-        let queryEmbedding: number[];
-        try {
-          queryEmbedding = await generateEmbedding(`${data.title} - ${topic.name}`);
-        } catch {
-          queryEmbedding = new Array(1536).fill(0);
+        // Find sub-topics for this topic from the frame
+        const frameEntry = topicFrames?.find(f => f.name === topic.name || f.id === topic.name);
+        const subTopics: string[] = frameEntry?.subTopics || [];
+
+        // Build search query combining topic name + sub-topics
+        const searchQuery = subTopics.length > 0
+          ? `${data.title} - ${topic.name}: ${subTopics.slice(0, 3).join(", ")}`
+          : `${data.title} - ${topic.name}`;
+
+        // Search corpus for relevant anchor documents (Feature 10)
+        let contextText = "Không tìm thấy quy định cụ thể.";
+
+        if (process.env.CORPUS_DATABASE_URL) {
+          try {
+            const corpusChunks = await searchCorpusChunks(searchQuery, {
+              limit: 10,
+              anchorOnly: true,
+            });
+
+            if (corpusChunks.length > 0) {
+              const chunkLines = corpusChunks.map((c, idx) => {
+                const ref = c.dieu_so ? ` — ${c.dieu_so}${c.dieu_ten ? `: ${c.dieu_ten}` : ""}` : "";
+                const link = c.link_tvpl ? `\n   🔗 ${c.link_tvpl}` : "";
+                return `[${idx+1}] ${c.so_hieu}${ref}\n${c.text_content.slice(0, 800)}${link}`;
+              });
+              contextText = chunkLines.join("\n\n");
+            }
+          } catch (err) {
+            console.warn(`Corpus search for topic "${topic.name}" failed:`, (err as Error).message);
+          }
         }
 
-        const chunkCount = await storage.getChunkCount();
-        let contextText: string;
-        if (chunkCount > 0) {
-          const chunks = await storage.hybridSearch(topic.name, queryEmbedding, { limit: 10 });
-          contextText = buildContextFromChunks(chunks);
-        } else {
-          contextText = "Không tìm thấy quy định cụ thể.";
-        }
-
-        const systemPrompt = getReportTopicPrompt(contextText, topic.name, data.title);
+        // Generate content with sub-topics
+        const systemPrompt = getReportTopicPrompt(contextText, topic.name, data.title, subTopics);
+        const userMsg = `Viết phần phân tích cho: ${topic.name}${data.industry ? ` (Ngành: ${data.industry})` : ""}${data.company ? ` (Công ty: ${data.company})` : ""}`;
         const content = await callLLM({
           model: data.ai_model || "deepseek",
           systemPrompt,
-          userMessage: `Viết phần phân tích cho: ${topic.name}${data.industry ? ` (Ngành: ${data.industry})` : ""}${data.company ? ` (Công ty: ${data.company})` : ""}`,
+          userMessage: userMsg,
         });
 
         await storage.updateTopic(topic.id, { content, status: "completed" });
-        contents.push(`## ${topic.name}\n\n${content}`);
+
+        // Format topic content with sub-section headings if sub-topics exist
+        let topicSection = `## ${i + 1}. ${topic.name}\n\n${content}`;
+        contents.push(topicSection);
+
       } catch (err) {
         console.error(`Error generating topic ${topic.name}:`, err);
         await storage.updateTopic(topic.id, { status: "failed" });
+        contents.push(`## ${i + 1}. ${topic.name}\n\n*Lỗi tạo nội dung cho phần này.*`);
       }
     }
 
-    // Combine all topic contents into the report
-    const fullContent = `# ${data.title}\n\n${contents.join("\n\n---\n\n")}`;
+    // Combine all topic contents into the report with TOC
+    const fullContent = `# ${data.title}\n\n${tocSection}${contents.join("\n\n---\n\n")}`;
     await storage.updateOutput(outputId, {
       content: fullContent,
       status: "completed",
+      metadata: {
+        industry: data.industry,
+        company: data.company,
+        progress: { current: total, total, currentTopic: "Hoàn thành" },
+      },
     });
 
     console.log(`Report ${outputId} completed`);
