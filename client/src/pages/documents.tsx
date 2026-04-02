@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { Search, BookOpen, Star } from "lucide-react";
 import { authFetch } from "@/lib/auth";
 import { SAC_THUE_OPTIONS } from "@shared/schema";
@@ -29,14 +30,16 @@ export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [sacThue, setSacThue] = useState("all");
   const [loai, setLoai] = useState("all");
+  const [anchorOnly, setAnchorOnly] = useState(false);
 
   const { data: docs, isLoading } = useQuery({
-    queryKey: ["/api/documents", search, sacThue, loai],
+    queryKey: ["/api/documents", search, sacThue, loai, anchorOnly],
     queryFn: async () => {
       let url = "/api/documents?";
       if (search) url += `search=${encodeURIComponent(search)}&`;
       if (sacThue !== "all") url += `sac_thue=${sacThue}&`;
       if (loai !== "all") url += `loai=${loai}&`;
+      if (anchorOnly) url += `anchor_only=true&`;
       const res = await authFetch(url);
       return res.json();
     },
@@ -85,6 +88,14 @@ export default function DocumentsPage() {
             ))}
           </SelectContent>
         </Select>
+        <Button
+          variant={anchorOnly ? "default" : "outline"}
+          size="sm"
+          onClick={() => setAnchorOnly(!anchorOnly)}
+        >
+          <Star size={12} className="mr-1" />
+          Anchor
+        </Button>
       </div>
 
       {/* Document list */}

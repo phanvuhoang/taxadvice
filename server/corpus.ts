@@ -245,3 +245,73 @@ export async function getAnchorDocuments(sacThue?: string[]): Promise<CorpusDocu
   const result = await corpusPool.query(sql, params);
   return result.rows as CorpusDocument[];
 }
+
+/**
+ * Search relevant chunks từ corpus bằng full-text search.
+ * Dùng để build RAG context cho AI.
+ */
+export async function searchCorpusChunks(
+  query: string,
+  options?: {
+    sacThue?: string[];
+    limit?: number;
+    anchorOnly?: boolean;
+  }
+): Promise<Array<{
+  chunk_id: number;
+  doc_id: number;
+  so_hieu: string;
+  ten: string;
+  dieu_so: string | null;
+  dieu_ten: string | null;
+  header_path: string | null;
+  text_content: string;
+  link_tvpl: string | null;
+  rank: number;
+}>> {
+  const limit = options?.limit ?? 8;
+  const anchorOnly = options?.anchorOnly !== false;
+
+  const params: any[] = [query, limit];
+  let docFilter = `d.tinh_trang = 'con_hieu_luc'`;
+
+  if (anchorOnly) {
+    docFilter += ` AND d.is_anchor = TRUE`;
+  }
+  if (options?.sacThue && options.sacThue.length > 0) {
+    params.push(options.sacThue);
+    docFilter += ` AND d.sac_thue && $${params.length}::varchar[]`;
+  }
+
+  const sql = `
+    SELECT
+      c.id AS chunk_id,
+      c.doc_id,
+      c.so_hieu,
+      d.ten,
+      c.dieu_so,
+      c.dieu_ten,
+      c.header_path,
+      c.text_content,
+      d.link_tvpl,
+      ts_rank(
+        to_tsvector('simple', c.text_content),
+        plainto_tsquery('simple', $1)
+      ) AS rank
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE
+      to_tsvector('simple', c.text_content) @@ plainto_tsquery('simple', $1)
+      AND ${docFilter}
+    ORDER BY rank DESC
+    LIMIT $2
+  `;
+
+  try {
+    const result = await corpusPool.query(sql, params);
+    return result.rows;
+  } catch (err) {
+    console.error("Corpus chunks search error:", err);
+    return [];
+  }
+}

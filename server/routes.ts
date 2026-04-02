@@ -19,7 +19,7 @@ import {
   quickQASchema, scenarioSchema, articleSchema, reportSchema, topicSchema, taxAdviceSchema,
 } from "@shared/schema";
 import {
-  corpusPool, searchCorpus, getDocumentBySoHieu, getDocumentChunks, getAnchorDocuments, stripHtml,
+  corpusPool, searchCorpus, searchCorpusChunks, getDocumentBySoHieu, getDocumentChunks, getAnchorDocuments, stripHtml,
 } from "./corpus";
 
 export async function registerRoutes(
@@ -116,25 +116,64 @@ export async function registerRoutes(
 
   app.get("/api/documents", requireAuth, async (req, res) => {
     try {
-      const docs = await storage.getDocuments({
-        sac_thue: String(req.query.sac_thue || ""),
-        loai: String(req.query.loai || ""),
-        tinh_trang: String(req.query.tinh_trang || ""),
-        search: String(req.query.search || ""),
-      });
-      res.json(docs);
+      const { sac_thue, loai, search, anchor_only } = req.query;
+
+      const params: any[] = [];
+      let where = `WHERE 1=1`;
+      let idx = 1;
+
+      if (sac_thue && sac_thue !== "all") {
+        where += ` AND $${idx} = ANY(sac_thue)`;
+        params.push(sac_thue); idx++;
+      }
+      if (loai && loai !== "all") {
+        where += ` AND loai = $${idx}`;
+        params.push(loai); idx++;
+      }
+      if (anchor_only === "true") {
+        where += ` AND is_anchor = TRUE`;
+      }
+      if (search) {
+        where += ` AND (ten ILIKE $${idx} OR so_hieu ILIKE $${idx})`;
+        params.push(`%${search}%`); idx++;
+      }
+
+      const sql = `
+        SELECT id, so_hieu, ten, loai, co_quan, ngay_ban_hanh, hieu_luc_tu,
+               het_hieu_luc_tu, tinh_trang, sac_thue, chu_de, tom_tat,
+               link_tvpl, importance, is_anchor, keywords
+        FROM documents
+        ${where}
+        ORDER BY is_anchor DESC, importance ASC, ngay_ban_hanh DESC
+        LIMIT 200
+      `;
+
+      const result = await corpusPool.query(sql, params);
+      res.json(result.rows);
     } catch (err) {
-      res.status(400).json({ message: "Lỗi tải danh sách văn bản" });
+      console.error("Documents list error:", err);
+      res.status(500).json({ message: "Lỗi tải danh sách văn bản" });
     }
   });
 
   app.get("/api/documents/:id", requireAuth, async (req, res) => {
     try {
-      const doc = await storage.getDocumentById(parseInt(String(req.params.id)));
-      if (!doc) return res.status(404).json({ message: "Không tìm thấy văn bản" });
-      res.json(doc);
+      const { id } = req.params;
+      const docResult = await corpusPool.query(
+        `SELECT * FROM documents WHERE id = $1`, [parseInt(id)]
+      );
+      if (!docResult.rows[0]) return res.status(404).json({ message: "Không tìm thấy văn bản" });
+
+      const chunksResult = await corpusPool.query(
+        `SELECT id, doc_id, so_hieu, chunk_index, dieu_so, dieu_ten, khoan_so,
+                chunk_level, header_path, text_content, char_count
+         FROM document_chunks WHERE doc_id = $1 ORDER BY chunk_index LIMIT 100`,
+        [parseInt(id)]
+      );
+
+      res.json({ document: docResult.rows[0], chunks: chunksResult.rows });
     } catch (err) {
-      res.status(400).json({ message: "Lỗi tải văn bản" });
+      res.status(500).json({ message: "Lỗi tải văn bản" });
     }
   });
 
@@ -237,28 +276,43 @@ export async function registerRoutes(
           : "Không tìm thấy quy định phù hợp trong cơ sở dữ liệu.";
       }
 
-      // Step 2b: Corpus (dbvntax) search — augment AI context with legal documents
+      // Step 2b: Corpus RAG — search chunks từ anchor documents
       let corpusContext = "";
       if (process.env.CORPUS_DATABASE_URL) {
         try {
-          const corpusResults = await searchCorpus(question, {
-            importanceMax: 2,
-            conHieuLuc: true,
-            limit: 5,
+          // Ưu tiên chunks (RAG thật) từ anchor documents
+          const chunks = await searchCorpusChunks(question, {
             sacThue: sac_thue,
+            limit: 8,
+            anchorOnly: true,
           });
-          if (corpusResults.length > 0) {
-            const lines = corpusResults.map(r => {
-              const doc = r.doc as any;
-              const tomTat = doc.tom_tat
-                ? `\nTóm tắt: ${doc.tom_tat}`
-                : doc.ket_luan
-                ? `\nKết luận: ${doc.ket_luan}`
-                : "";
-              const link = doc.link_tvpl || doc.link_nguon ? `\nLink: ${doc.link_tvpl || doc.link_nguon}` : "";
-              return `[${doc.so_hieu}] ${doc.ten}${tomTat}${link}`;
+
+          if (chunks.length > 0) {
+            const chunkLines = chunks.map((c, i) => {
+              const ref = c.dieu_so
+                ? ` — ${c.dieu_so}${c.dieu_ten ? `: ${c.dieu_ten}` : ""}`
+                : c.header_path ? ` — ${c.header_path}` : "";
+              const link = c.link_tvpl ? `\n   🔗 ${c.link_tvpl}` : "";
+              return `[${i+1}] ${c.so_hieu}${ref}\n${c.text_content.slice(0, 800)}${c.text_content.length > 800 ? "..." : ""}${link}`;
             });
-            corpusContext = lines.join("\n\n");
+            corpusContext = chunkLines.join("\n\n");
+          } else {
+            // Fallback: document-level search nếu không có chunks match
+            const docResults = await searchCorpus(question, {
+              importanceMax: 2,
+              conHieuLuc: true,
+              limit: 5,
+              sacThue: sac_thue,
+            });
+            if (docResults.length > 0) {
+              const lines = docResults.map(r => {
+                const doc = r.doc as any;
+                const tomTat = doc.tom_tat ? `\nTóm tắt: ${doc.tom_tat}` : doc.ket_luan ? `\nKết luận: ${doc.ket_luan}` : "";
+                const link = doc.link_tvpl || doc.link_nguon ? `\nLink: ${doc.link_tvpl || doc.link_nguon}` : "";
+                return `[${doc.so_hieu}] ${doc.ten}${tomTat}${link}`;
+              });
+              corpusContext = lines.join("\n\n");
+            }
           }
         } catch (err) {
           console.warn("Corpus search failed (non-blocking):", (err as Error).message);
