@@ -104,19 +104,32 @@ export async function initDatabase() {
       console.warn("pgvector extension may already exist or need superuser:", (e as Error).message);
     }
 
-    // Create default admin if not exists
+    // Create or update default admin
+    // Always syncs password from env vars on every startup
+    const adminEmail = process.env.ADMIN_EMAIL || "admin@taxadvice.vn";
+    const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
+    const bcrypt = await import("bcryptjs");
+    const hash = await bcrypt.hash(adminPassword, 12);
+
     const adminCheck = await client.query(
-      `SELECT id FROM app_users WHERE role = 'admin' LIMIT 1`
+      `SELECT id FROM app_users WHERE email = $1`,
+      [adminEmail]
     );
+
     if (adminCheck.rows.length === 0) {
-      const bcrypt = await import("bcryptjs");
-      const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD || "admin123", 12);
+      // Create admin
       await client.query(
-        `INSERT INTO app_users (email, password_hash, name, role) VALUES ($1, $2, $3, 'admin')
-         ON CONFLICT (email) DO NOTHING`,
-        [process.env.ADMIN_EMAIL || "admin@taxadvice.vn", hash, "Admin"]
+        `INSERT INTO app_users (email, password_hash, name, role) VALUES ($1, $2, $3, 'admin')`,
+        [adminEmail, hash, "Admin"]
       );
-      console.log("Default admin user created");
+      console.log(`Admin user created: ${adminEmail}`);
+    } else {
+      // Always update password hash to match env var (in case it changed)
+      await client.query(
+        `UPDATE app_users SET password_hash = $1, role = 'admin', updated_at = NOW() WHERE email = $2`,
+        [hash, adminEmail]
+      );
+      console.log(`Admin user password synced: ${adminEmail}`);
     }
 
     console.log("Database initialized successfully");

@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { v4 as uuidv4 } from "uuid";
 import * as storage from "./storage";
+import pool from "./db";
 import { requireAuth, requireAdmin, generateToken } from "./auth";
 import { sendPasswordResetEmail } from "./email";
 import {
@@ -49,20 +50,24 @@ export async function registerRoutes(
       const data = loginSchema.parse(req.body);
       const user = await storage.getUserByEmail(data.email);
       if (!user) {
+        console.log(`Login failed: email not found - ${data.email}`);
         return res.status(401).json({ message: "Email hoặc mật khẩu không đúng" });
       }
       const valid = await storage.verifyPassword(user, data.password);
       if (!valid) {
+        console.log(`Login failed: wrong password for ${data.email}`);
         return res.status(401).json({ message: "Email hoặc mật khẩu không đúng" });
       }
       const { password_hash, ...publicUser } = user;
       const token = generateToken(publicUser);
+      console.log(`Login success: ${data.email} (role: ${publicUser.role})`);
       res.json({ user: publicUser, token });
     } catch (err: any) {
+      console.error("Login error:", err);
       if (err.name === "ZodError") {
         return res.status(400).json({ message: err.errors[0]?.message || "Dữ liệu không hợp lệ" });
       }
-      res.status(400).json({ message: "Đăng nhập thất bại" });
+      res.status(400).json({ message: `Đăng nhập thất bại: ${err.message}` });
     }
   });
 
@@ -608,8 +613,33 @@ export async function registerRoutes(
   });
 
   // ========== HEALTH CHECK ==========
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  app.get("/api/health", async (_req, res) => {
+    let dbStatus = "unknown";
+    let adminEmail = process.env.ADMIN_EMAIL || "admin@taxadvice.vn";
+    let adminExists = false;
+    try {
+      const result = await pool.query(`SELECT id, email, role FROM app_users WHERE email = $1`, [adminEmail]);
+      adminExists = result.rows.length > 0;
+      dbStatus = "connected";
+    } catch (err) {
+      dbStatus = `error: ${(err as Error).message}`;
+    }
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      db: dbStatus,
+      admin_email: adminEmail,
+      admin_exists: adminExists,
+      env_check: {
+        DATABASE_URL: !!process.env.DATABASE_URL,
+        JWT_SECRET: !!process.env.JWT_SECRET,
+        DEEPSEEK_API_KEY: !!process.env.DEEPSEEK_API_KEY,
+        ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY,
+        OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+        PERPLEXITY_API_KEY: !!process.env.PERPLEXITY_API_KEY,
+        SMTP_HOST: !!process.env.SMTP_HOST,
+      },
+    });
   });
 
   return httpServer;
