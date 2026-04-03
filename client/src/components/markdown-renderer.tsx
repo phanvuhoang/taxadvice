@@ -5,32 +5,21 @@ interface MarkdownRendererProps {
   content: string;
   streaming?: boolean;
   className?: string;
+  citations?: Array<{ so_hieu: string; url?: string; article_ref?: string; excerpt?: string }>;
 }
 
-// Process citation references [1], [2] etc. and turn into superscript anchor links
+// Render [N] as plain superscript text (no link) — these are inline reference markers
 function processCitations(html: string): string {
-  // Replace [N] patterns with superscript links
-  return html.replace(/\[(\d+)\]/g, (match, num) => {
-    return `<sup><a href="#citation-${num}" class="citation-ref">[${num}]</a></sup>`;
+  return html.replace(/\[(\d+)\]/g, (_match, num) => {
+    return `<sup class="citation-ref">[${num}]</sup>`;
   });
 }
 
-// Add id anchors to citation list items at the end (e.g., lines starting with [1] ...)
-function processCitationList(html: string): string {
-  // Match paragraphs or list items that start with [N]
-  return html.replace(/<(p|li)>(\[(\d+)\])/g, (match, tag, bracket, num) => {
-    return `<${tag} id="citation-${num}">${bracket}`;
-  });
-}
-
-export function MarkdownRenderer({ content, streaming, className }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, streaming, className, citations }: MarkdownRendererProps) {
   const html = useMemo(() => {
     if (!content) return "";
     try {
       let rendered = marked.parse(content, { breaks: true, gfm: true }) as string;
-      // Process citation list items first (add id anchors)
-      rendered = processCitationList(rendered);
-      // Then process inline citation references (add superscript links)
       rendered = processCitations(rendered);
       return rendered;
     } catch {
@@ -38,10 +27,38 @@ export function MarkdownRenderer({ content, streaming, className }: MarkdownRend
     }
   }, [content]);
 
+  // Filter web citations (those with http URLs)
+  const webCitations = useMemo(() => {
+    if (!citations) return [];
+    return citations.filter((c: any) => c.url && String(c.url).startsWith("http"));
+  }, [citations]);
+
   return (
-    <div
-      className={`markdown-content ${streaming ? "streaming-cursor" : ""} ${className || ""}`}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className={className || ""}>
+      <div
+        className={`markdown-content ${streaming ? "streaming-cursor" : ""}`}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      {webCitations.length > 0 && !streaming && (
+        <div className="mt-4 pt-3 border-t border-border">
+          <p className="text-xs font-medium text-muted-foreground mb-2">Nguồn internet tham khảo:</p>
+          <div className="space-y-1">
+            {webCitations.map((c: any, i: number) => (
+              <div key={i} className="text-xs">
+                <span className="text-muted-foreground">[{i + 1}]</span>{" "}
+                <a
+                  href={c.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline break-all"
+                >
+                  {c.url}
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

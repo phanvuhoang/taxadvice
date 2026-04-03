@@ -209,7 +209,7 @@ export default function OutputDetailPage() {
 
           {output.content ? (
             <div className="markdown-content" style={{ fontSize: `${fontSize}px` }}>
-              <MarkdownRenderer content={output.content} />
+              <MarkdownRenderer content={output.content} citations={output.citations as any[]} />
             </div>
           ) : output.status === "processing" ? (
             <p className="text-sm text-muted-foreground animate-pulse">Đang xử lý trong nền...</p>
@@ -217,21 +217,7 @@ export default function OutputDetailPage() {
             <p className="text-sm text-muted-foreground">Không có nội dung</p>
           )}
 
-          {/* Citations */}
-          {output.citations && (output.citations as Citation[]).length > 0 && (
-            <div className="mt-4 pt-3 border-t">
-              <p className="text-xs font-medium text-muted-foreground mb-2">Văn bản tham chiếu:</p>
-              <div className="space-y-1">
-                {(output.citations as Citation[]).map((c: Citation, i: number) => (
-                  <div key={i} className="flex items-start gap-2 text-xs">
-                    <Badge variant="outline" className="text-[10px] shrink-0">{c.so_hieu}</Badge>
-                    {c.article_ref && <span className="text-muted-foreground">{c.article_ref}</span>}
-                    {c.excerpt && <span className="text-muted-foreground/70 truncate">{c.excerpt}</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+
 
           {/* Gamma slide section */}
           {hasGammaKey && output.content && output.status === "completed" && (

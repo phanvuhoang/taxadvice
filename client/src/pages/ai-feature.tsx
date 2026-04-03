@@ -298,23 +298,11 @@ export default function AIFeaturePage({
               <p className="text-sm text-destructive">{error}</p>
             ) : (
               <div ref={contentRef} className="max-h-[600px] overflow-y-auto pr-2">
-                <MarkdownRenderer content={content} streaming={streaming} />
+                <MarkdownRenderer content={content} streaming={streaming} citations={output?.citations as any[]} />
               </div>
             )}
 
-            {/* Citations */}
-            {output?.citations && (output.citations as Citation[]).length > 0 && (
-              <div className="mt-4 pt-3 border-t">
-                <p className="text-xs font-medium text-muted-foreground mb-2">Văn bản tham chiếu:</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {(output.citations as Citation[]).map((c, i) => (
-                    <Badge key={i} variant="outline" className="text-[10px] font-normal">
-                      {c.so_hieu}{c.article_ref ? ` - ${c.article_ref}` : ""}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
+
 
             {/* Gamma section */}
             {hasGammaKey && output && !streaming && (

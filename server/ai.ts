@@ -138,7 +138,7 @@ export async function callLLM(options: {
     if (!client) throw new Error("ANTHROPIC_API_KEY chưa được cấu hình");
 
     const response = await client.messages.create({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5",
       max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
@@ -182,7 +182,7 @@ export async function streamLLM(options: {
     if (!client) throw new Error("ANTHROPIC_API_KEY chưa được cấu hình");
 
     const stream = client.messages.stream({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5",
       max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
@@ -271,16 +271,21 @@ NGUYÊN TẮC QUAN TRỌNG:
 7. Khi trích dẫn từ database, dùng: "Theo [Điều X, Khoản Y] [Số hiệu văn bản], ..."
 8. Khi dùng thông tin từ internet, ghi rõ: "(Nguồn: internet - cần kiểm chứng)".
 9. Thông tin từ database luôn đáng tin hơn thông tin từ internet.
+10. Phần "VĂN BẢN PHÁP LUẬT HIỆN HÀNH" liệt kê tất cả các văn bản anchor đang còn hiệu lực cho sắc thuế được hỏi. Bạn PHẢI ưu tiên tham chiếu đến các văn bản này.
+11. Chỉ sử dụng thông tin từ internet khi không tìm thấy quy định cụ thể trong các văn bản pháp luật đã cung cấp.
 ${CITATION_INSTRUCTION}`;
 
-export function getQuickQAPrompt(context: string, internetContext?: string, styleContext?: string): string {
-  let prompt = `${BASE_SYSTEM_PROMPT}
+export function getQuickQAPrompt(context: string, internetContext?: string, styleContext?: string, anchorListContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}`;
 
-QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
-${context}`;
+  if (anchorListContext) {
+    prompt += `\n\nVĂN BẢN PHÁP LUẬT HIỆN HÀNH (văn bản anchor còn hiệu lực cho sắc thuế này):\n${anchorListContext}`;
+  }
+
+  prompt += `\n\nQUY ĐỊNH CỤ THỂ LIÊN QUAN:\n${context}`;
 
   if (internetContext) {
-    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (cần kiểm chứng):\n${internetContext}`;
   }
 
   if (styleContext) {
@@ -302,14 +307,17 @@ Format trả lời:
   return prompt;
 }
 
-export function getScenarioPrompt(context: string, internetContext?: string, styleContext?: string): string {
-  let prompt = `${BASE_SYSTEM_PROMPT}
+export function getScenarioPrompt(context: string, internetContext?: string, styleContext?: string, anchorListContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}`;
 
-QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
-${context}`;
+  if (anchorListContext) {
+    prompt += `\n\nVĂN BẢN PHÁP LUẬT HIỆN HÀNH (văn bản anchor còn hiệu lực cho sắc thuế này):\n${anchorListContext}`;
+  }
+
+  prompt += `\n\nQUY ĐỊNH CỤ THỂ LIÊN QUAN:\n${context}`;
 
   if (internetContext) {
-    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (cần kiểm chứng):\n${internetContext}`;
   }
 
   if (styleContext) {
@@ -336,14 +344,17 @@ ${context}`;
   return prompt;
 }
 
-export function getArticlePrompt(context: string, internetContext?: string, styleContext?: string): string {
-  let prompt = `${BASE_SYSTEM_PROMPT}
+export function getArticlePrompt(context: string, internetContext?: string, styleContext?: string, anchorListContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}`;
 
-QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
-${context}`;
+  if (anchorListContext) {
+    prompt += `\n\nVĂN BẢN PHÁP LUẬT HIỆN HÀNH (văn bản anchor còn hiệu lực cho sắc thuế này):\n${anchorListContext}`;
+  }
+
+  prompt += `\n\nQUY ĐỊNH CỤ THỂ LIÊN QUAN:\n${context}`;
 
   if (internetContext) {
-    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (cần kiểm chứng):\n${internetContext}`;
   }
 
   if (styleContext) {
@@ -382,14 +393,17 @@ Format:
   return prompt;
 }
 
-export function getTaxAdvicePrompt(context: string, internetContext?: string, styleContext?: string): string {
-  let prompt = `${BASE_SYSTEM_PROMPT}
+export function getTaxAdvicePrompt(context: string, internetContext?: string, styleContext?: string, anchorListContext?: string): string {
+  let prompt = `${BASE_SYSTEM_PROMPT}`;
 
-QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
-${context}`;
+  if (anchorListContext) {
+    prompt += `\n\nVĂN BẢN PHÁP LUẬT HIỆN HÀNH (văn bản anchor còn hiệu lực cho sắc thuế này):\n${anchorListContext}`;
+  }
+
+  prompt += `\n\nQUY ĐỊNH CỤ THỂ LIÊN QUAN:\n${context}`;
 
   if (internetContext) {
-    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (cần kiểm chứng):\n${internetContext}`;
   }
 
   if (styleContext) {
@@ -429,16 +443,19 @@ Format:
   return prompt;
 }
 
-export function getPressArticlePrompt(context: string, internetContext?: string, styleContext?: string): string {
+export function getPressArticlePrompt(context: string, internetContext?: string, styleContext?: string, anchorListContext?: string): string {
   let prompt = `${BASE_SYSTEM_PROMPT}
 
-Bạn đang viết bài báo theo phong cách báo chí — kể chuyện sinh động, ngôn ngữ gần gũi, dễ hiểu với đại chúng.
+Bạn đang viết bài báo theo phong cách báo chí — kể chuyện sinh động, ngôn ngữ gần gũi, dễ hiểu với đại chúng.`;
 
-QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
-${context}`;
+  if (anchorListContext) {
+    prompt += `\n\nVĂN BẢN PHÁP LUẬT HIỆN HÀNH (văn bản anchor còn hiệu lực cho sắc thuế này):\n${anchorListContext}`;
+  }
+
+  prompt += `\n\nQUY ĐỊNH CỤ THỂ LIÊN QUAN:\n${context}`;
 
   if (internetContext) {
-    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (cần kiểm chứng):\n${internetContext}`;
   }
 
   if (styleContext) {
@@ -481,15 +498,19 @@ export function getReportTopicPrompt(
   reportTitle: string,
   subTopics?: string[],
   internetContext?: string,
-  styleContext?: string
+  styleContext?: string,
+  anchorListContext?: string
 ): string {
-  let prompt = `${BASE_SYSTEM_PROMPT}
+  let prompt = `${BASE_SYSTEM_PROMPT}`;
 
-QUY ĐỊNH THAM CHIẾU TỪ DATABASE:
-${context}`;
+  if (anchorListContext) {
+    prompt += `\n\nVĂN BẢN PHÁP LUẬT HIỆN HÀNH (văn bản anchor còn hiệu lực cho sắc thuế này):\n${anchorListContext}`;
+  }
+
+  prompt += `\n\nQUY ĐỊNH CỤ THỂ LIÊN QUAN:\n${context}`;
 
   if (internetContext) {
-    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (tham khảo, cần kiểm chứng):\n${internetContext}`;
+    prompt += `\n\nTHÔNG TIN BỔ SUNG TỪ INTERNET (cần kiểm chứng):\n${internetContext}`;
   }
 
   if (styleContext) {

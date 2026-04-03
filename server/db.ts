@@ -28,6 +28,28 @@ async function safeQuery(client: pg.PoolClient, sql: string, label?: string) {
 export async function initDatabase() {
   const client = await pool.connect();
   try {
+    // Drop old type check constraint if it exists (allows new types like press_article)
+    await safeQuery(client, `ALTER TABLE outputs DROP CONSTRAINT IF EXISTS outputs_type_check`, "drop outputs_type_check");
+    // Also try common auto-generated constraint names
+    await safeQuery(client, `ALTER TABLE outputs DROP CONSTRAINT IF EXISTS outputs_type_check1`, "drop outputs_type_check1");
+    // Generic pattern: find and drop any CHECK constraint on type column
+    await safeQuery(client, `
+      DO $$ 
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN (
+          SELECT con.conname
+          FROM pg_constraint con
+          JOIN pg_class rel ON rel.oid = con.conrelid
+          WHERE rel.relname = 'outputs'
+            AND con.contype = 'c'
+            AND pg_get_constraintdef(con.oid) LIKE '%type%'
+        ) LOOP
+          EXECUTE 'ALTER TABLE outputs DROP CONSTRAINT IF EXISTS ' || r.conname;
+        END LOOP;
+      END $$
+    `, "drop all type check constraints");
+
     // Core tables — these must succeed
     await client.query(`
       CREATE TABLE IF NOT EXISTS app_users (

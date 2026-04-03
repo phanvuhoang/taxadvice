@@ -1,9 +1,10 @@
-import { marked } from "marked";
+import {
+  Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
+  ExternalHyperlink, BorderStyle, TableOfContents,
+  Header, Footer, PageNumber, NumberFormat,
+  IRunOptions, IParagraphOptions,
+} from "docx";
 import type { Output, Citation } from "@shared/schema";
-
-// html-docx-js-typescript may use default export or asBlob export
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const htmlDocx = require("html-docx-js-typescript");
 
 const TYPE_LABELS: Record<string, string> = {
   quick_qa: "Tra cứu nhanh",
@@ -14,165 +15,288 @@ const TYPE_LABELS: Record<string, string> = {
   press_article: "Bài viết báo",
 };
 
+const FONT = "Arial";
+const PRIMARY_COLOR = "0d5c63";
+
 /**
- * Convert markdown text to HTML with basic sanitization.
+ * Parse markdown text into docx Paragraph[] array.
  */
-function markdownToHtml(md: string): string {
-  // Use marked synchronously
-  const result = marked.parse(md, { async: false });
-  return typeof result === "string" ? result : "";
+function parseMarkdownToParagraphs(md: string): Paragraph[] {
+  const paragraphs: Paragraph[] = [];
+  const lines = md.split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Empty line
+    if (!line.trim()) continue;
+
+    // Headings
+    if (line.startsWith("### ")) {
+      paragraphs.push(new Paragraph({
+        heading: HeadingLevel.HEADING_3,
+        children: parseInlineFormatting(line.slice(4)),
+        spacing: { before: 200, after: 100 },
+      }));
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      paragraphs.push(new Paragraph({
+        heading: HeadingLevel.HEADING_2,
+        children: parseInlineFormatting(line.slice(3)),
+        spacing: { before: 300, after: 100 },
+      }));
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      paragraphs.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: parseInlineFormatting(line.slice(2)),
+        spacing: { before: 400, after: 150 },
+      }));
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^-{3,}$/.test(line.trim()) || /^\*{3,}$/.test(line.trim())) {
+      paragraphs.push(new Paragraph({
+        children: [],
+        border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: "cccccc" } },
+        spacing: { before: 200, after: 200 },
+      }));
+      continue;
+    }
+
+    // Bullet list
+    if (/^[-*]\s/.test(line)) {
+      paragraphs.push(new Paragraph({
+        children: parseInlineFormatting(line.replace(/^[-*]\s/, "")),
+        bullet: { level: 0 },
+        spacing: { before: 40, after: 40 },
+      }));
+      continue;
+    }
+
+    // Numbered list
+    const numMatch = line.match(/^(\d+)\.\s/);
+    if (numMatch) {
+      paragraphs.push(new Paragraph({
+        children: parseInlineFormatting(line.replace(/^\d+\.\s/, "")),
+        numbering: { reference: "default-numbering", level: 0 },
+        spacing: { before: 40, after: 40 },
+      }));
+      continue;
+    }
+
+    // Blockquote
+    if (line.startsWith("> ")) {
+      paragraphs.push(new Paragraph({
+        children: parseInlineFormatting(line.slice(2)),
+        indent: { left: 720 },
+        border: { left: { style: BorderStyle.SINGLE, size: 3, color: PRIMARY_COLOR } },
+        spacing: { before: 100, after: 100 },
+      }));
+      continue;
+    }
+
+    // Regular paragraph
+    paragraphs.push(new Paragraph({
+      children: parseInlineFormatting(line),
+      spacing: { before: 60, after: 60 },
+    }));
+  }
+
+  return paragraphs;
 }
 
 /**
- * Build the HTML document for the DOCX.
+ * Parse inline formatting (bold, italic, links, citation refs).
  */
-function buildHtmlDocument(output: Output): string {
+function parseInlineFormatting(text: string): (TextRun | ExternalHyperlink)[] {
+  const runs: (TextRun | ExternalHyperlink)[] = [];
+
+  // Split by bold, italic, links, citation refs
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\)|\[\d+\])/g);
+
+  for (const part of parts) {
+    if (!part) continue;
+
+    // Bold **text**
+    const boldMatch = part.match(/^\*\*(.+)\*\*$/);
+    if (boldMatch) {
+      runs.push(new TextRun({ text: boldMatch[1], bold: true, font: FONT, size: 22 }));
+      continue;
+    }
+
+    // Italic *text*
+    const italicMatch = part.match(/^\*(.+)\*$/);
+    if (italicMatch) {
+      runs.push(new TextRun({ text: italicMatch[1], italics: true, font: FONT, size: 22 }));
+      continue;
+    }
+
+    // Link [text](url)
+    const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (linkMatch) {
+      runs.push(new ExternalHyperlink({
+        children: [new TextRun({ text: linkMatch[1], color: PRIMARY_COLOR, underline: {}, font: FONT, size: 22 })],
+        link: linkMatch[2],
+      }));
+      continue;
+    }
+
+    // Citation ref [N]
+    const citMatch = part.match(/^\[(\d+)\]$/);
+    if (citMatch) {
+      runs.push(new TextRun({ text: `[${citMatch[1]}]`, superScript: true, color: PRIMARY_COLOR, font: FONT, size: 18 }));
+      continue;
+    }
+
+    // Plain text
+    runs.push(new TextRun({ text: part, font: FONT, size: 22 }));
+  }
+
+  return runs;
+}
+
+/**
+ * Generate DOCX buffer from an Output.
+ */
+export async function generateDOCX(output: Output): Promise<Buffer> {
   const title = output.title || "TaxAdvice Report";
   const typeLabel = TYPE_LABELS[output.type] || output.type;
   const dateStr = new Date(output.created_at).toLocaleDateString("vi-VN", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
+    day: "2-digit", month: "2-digit", year: "numeric",
   });
 
-  const contentHtml = output.content ? markdownToHtml(output.content) : "<p><em>Không có nội dung.</em></p>";
+  const sections: Paragraph[] = [];
 
+  // Title
+  sections.push(new Paragraph({
+    children: [new TextRun({ text: title, bold: true, font: FONT, size: 36, color: PRIMARY_COLOR })],
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 100 },
+  }));
+
+  // Meta info
+  sections.push(new Paragraph({
+    children: [new TextRun({ text: `Loại: ${typeLabel}  |  Ngày: ${dateStr}`, font: FONT, size: 20, color: "888888" })],
+    alignment: AlignmentType.CENTER,
+    spacing: { after: 300 },
+  }));
+
+  // Separator
+  sections.push(new Paragraph({
+    children: [],
+    border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: "cccccc" } },
+    spacing: { after: 200 },
+  }));
+
+  // Question
+  if (output.question) {
+    sections.push(new Paragraph({
+      children: [new TextRun({ text: "Câu hỏi / Tình huống:", bold: true, font: FONT, size: 20, color: "333333" })],
+      spacing: { before: 100 },
+    }));
+    sections.push(new Paragraph({
+      children: [new TextRun({ text: output.question, font: FONT, size: 22, color: "444444" })],
+      indent: { left: 360 },
+      border: { left: { style: BorderStyle.SINGLE, size: 3, color: PRIMARY_COLOR } },
+      spacing: { before: 60, after: 200 },
+    }));
+  }
+
+  // Main content
+  if (output.content) {
+    const contentParagraphs = parseMarkdownToParagraphs(output.content);
+    sections.push(...contentParagraphs);
+  }
+
+  // Citations (only web sources with URLs)
   const citations: Citation[] = output.citations || [];
-  let citationsHtml = "";
-  if (citations.length > 0) {
-    const citationItems = citations
-      .map((c, i) => {
-        const urlPart = (c as any).url
-          ? ` — <a href="${(c as any).url}">${(c as any).url}</a>`
-          : c.article_ref && c.article_ref.startsWith("http")
-          ? ` — <a href="${c.article_ref}">${c.article_ref}</a>`
-          : c.article_ref
-          ? ` — ${c.article_ref}`
-          : "";
-        const excerptPart = c.excerpt ? `<br/><span style="color:#666;font-size:10pt;">${c.excerpt}</span>` : "";
-        return `<li>[${i + 1}] <strong>${c.so_hieu}</strong>${urlPart}${excerptPart}</li>`;
-      })
-      .join("\n");
+  const webCitations = citations.filter((c: any) => c.url && c.url.startsWith("http"));
+  if (webCitations.length > 0) {
+    sections.push(new Paragraph({
+      children: [],
+      border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: "cccccc" } },
+      spacing: { before: 400, after: 200 },
+    }));
+    sections.push(new Paragraph({
+      children: [new TextRun({ text: "Nguồn tham khảo từ internet", bold: true, font: FONT, size: 24, color: PRIMARY_COLOR })],
+      spacing: { after: 100 },
+    }));
 
-    citationsHtml = `
-      <hr style="border:1px solid #cccccc; margin:24pt 0 12pt 0;"/>
-      <h2 style="font-family:Arial,sans-serif; font-size:13pt; color:#0d5c63;">Văn bản tham chiếu</h2>
-      <ol style="font-family:Arial,sans-serif; font-size:10pt; color:#333333; padding-left:20pt;">
-        ${citationItems}
-      </ol>`;
-  }
-
-  const questionHtml = output.question
-    ? `<div style="background:#f5f5f5; border-left:4px solid #0d5c63; padding:8pt 12pt; margin-bottom:16pt; font-family:Arial,sans-serif;">
-         <p style="font-size:10pt; font-weight:bold; color:#333; margin:0 0 4pt 0;">Câu hỏi / Tình huống:</p>
-         <p style="font-size:10pt; color:#444; margin:0;">${output.question.replace(/\n/g, "<br/>")}</p>
-       </div>`
-    : "";
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <meta charset="utf-8"/>
-  <title>${title}</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      font-size: 11pt;
-      color: #333333;
-      line-height: 1.6;
-      margin: 0;
-      padding: 0;
-    }
-    h1 { font-family: Arial, sans-serif; font-size: 18pt; color: #0d5c63; text-align: center; margin-bottom: 6pt; }
-    h2 { font-family: Arial, sans-serif; font-size: 13pt; color: #1a1a1a; margin-top: 18pt; margin-bottom: 6pt; }
-    h3 { font-family: Arial, sans-serif; font-size: 11pt; color: #333333; margin-top: 12pt; margin-bottom: 4pt; }
-    p { font-family: Arial, sans-serif; font-size: 11pt; margin: 6pt 0; }
-    ul, ol { font-family: Arial, sans-serif; font-size: 11pt; padding-left: 20pt; }
-    li { margin: 3pt 0; }
-    strong { font-weight: bold; }
-    em { font-style: italic; }
-    code { font-family: "Courier New", monospace; font-size: 9pt; background: #f0f0f0; padding: 1pt 3pt; }
-    pre { font-family: "Courier New", monospace; font-size: 9pt; background: #f0f0f0; padding: 8pt; }
-    blockquote { border-left: 4px solid #cccccc; padding-left: 12pt; color: #555; margin: 10pt 0; }
-    hr { border: 1px solid #cccccc; margin: 16pt 0; }
-    a { color: #0d5c63; }
-    table { border-collapse: collapse; width: 100%; font-size: 10pt; }
-    th { background: #0d5c63; color: white; padding: 6pt 8pt; text-align: left; }
-    td { border: 1px solid #cccccc; padding: 5pt 8pt; }
-    tr:nth-child(even) td { background: #f9f9f9; }
-  </style>
-</head>
-<body>
-  <!-- Header -->
-  <p style="text-align:right; font-size:9pt; color:#888888; font-family:Arial,sans-serif;">TaxAdvice — Hệ thống Tư vấn Thuế</p>
-  <hr style="border:1px solid #cccccc;"/>
-
-  <!-- Title -->
-  <h1>${title}</h1>
-  <p style="text-align:center; font-size:10pt; color:#888888; font-family:Arial,sans-serif;">
-    Loại: ${typeLabel} &nbsp;|&nbsp; Ngày: ${dateStr}
-  </p>
-  <hr style="border:1px solid #cccccc; margin-bottom:16pt;"/>
-
-  <!-- Question (if any) -->
-  ${questionHtml}
-
-  <!-- Main content -->
-  <div class="content">
-    ${contentHtml}
-  </div>
-
-  <!-- Citations -->
-  ${citationsHtml}
-
-  <!-- Footer -->
-  <hr style="border:1px solid #eeeeee; margin-top:24pt;"/>
-  <p style="font-size:8pt; color:#999999; text-align:center; font-family:Arial,sans-serif;">
-    Tài liệu này được tạo bởi TaxAdvice App. Nội dung chỉ mang tính tham khảo, không thay thế tư vấn chuyên môn.
-  </p>
-</body>
-</html>`;
-}
-
-/**
- * Generate a DOCX buffer from an Output object.
- */
-export async function generateDOCX(output: Output): Promise<Buffer> {
-  const htmlContent = buildHtmlDocument(output);
-
-  // html-docx-js-typescript converts HTML string to DOCX blob/buffer
-  // The library exports asBlob or the default export
-  let docxData: any;
-
-  if (typeof htmlDocx === "function") {
-    docxData = htmlDocx(htmlContent);
-  } else if (typeof htmlDocx.asBlob === "function") {
-    docxData = htmlDocx.asBlob(htmlContent, {
-      orientation: "portrait",
-      margins: { top: 720, right: 720, bottom: 720, left: 720 },
+    webCitations.forEach((c: any, i) => {
+      const children: (TextRun | ExternalHyperlink)[] = [
+        new TextRun({ text: `[${i + 1}] `, bold: true, font: FONT, size: 20 }),
+      ];
+      if (c.url) {
+        children.push(new ExternalHyperlink({
+          children: [new TextRun({ text: c.url, color: PRIMARY_COLOR, underline: {}, font: FONT, size: 20 })],
+          link: c.url,
+        }));
+      }
+      sections.push(new Paragraph({ children, spacing: { before: 40, after: 40 } }));
     });
-  } else if (typeof htmlDocx.default === "function") {
-    docxData = htmlDocx.default(htmlContent);
-  } else {
-    throw new Error("html-docx-js-typescript: no usable export found");
   }
 
-  // Convert to Buffer if it's a Blob or ArrayBuffer
-  if (Buffer.isBuffer(docxData)) {
-    return docxData;
-  }
+  // Footer note
+  sections.push(new Paragraph({
+    children: [],
+    border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: "eeeeee" } },
+    spacing: { before: 400, after: 100 },
+  }));
+  sections.push(new Paragraph({
+    children: [new TextRun({
+      text: "Tài liệu này được tạo bởi TaxAdvice App. Nội dung chỉ mang tính tham khảo.",
+      font: FONT, size: 16, color: "999999", italics: true,
+    })],
+    alignment: AlignmentType.CENTER,
+  }));
 
-  if (docxData instanceof ArrayBuffer) {
-    return Buffer.from(docxData);
-  }
+  const doc = new Document({
+    numbering: {
+      config: [{
+        reference: "default-numbering",
+        levels: [{ level: 0, format: NumberFormat.DECIMAL, text: "%1.", alignment: AlignmentType.START }],
+      }],
+    },
+    styles: {
+      default: {
+        document: {
+          run: { font: FONT, size: 22 },
+        },
+        heading1: {
+          run: { font: FONT, size: 32, bold: true, color: PRIMARY_COLOR },
+          paragraph: { spacing: { before: 400, after: 150 } },
+        },
+        heading2: {
+          run: { font: FONT, size: 26, bold: true, color: "1a1a1a" },
+          paragraph: { spacing: { before: 300, after: 100 } },
+        },
+        heading3: {
+          run: { font: FONT, size: 22, bold: true, color: "333333" },
+          paragraph: { spacing: { before: 200, after: 80 } },
+        },
+      },
+    },
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+        },
+      },
+      headers: {
+        default: new Header({
+          children: [new Paragraph({
+            children: [new TextRun({ text: "TaxAdvice — Hệ thống Tư vấn Thuế", font: FONT, size: 16, color: "888888" })],
+            alignment: AlignmentType.RIGHT,
+          })],
+        }),
+      },
+      children: sections,
+    }],
+  });
 
-  // Blob (in Node.js environments that support it)
-  if (docxData && typeof docxData.arrayBuffer === "function") {
-    const ab = await docxData.arrayBuffer();
-    return Buffer.from(ab);
-  }
-
-  // Fallback: treat as Buffer-like
-  return Buffer.from(docxData);
+  return await Packer.toBuffer(doc);
 }

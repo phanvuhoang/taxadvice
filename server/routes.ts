@@ -363,7 +363,7 @@ export async function registerRoutes(
     question: string;
     sac_thue?: string[];
     ai_model: "deepseek" | "anthropic";
-    promptBuilder: (context: string, internetContext?: string, styleContext?: string) => string;
+    promptBuilder: (context: string, internetContext?: string, styleContext?: string, anchorListContext?: string) => string;
     type: string;
     title: string;
     userId: number;
@@ -373,112 +373,140 @@ export async function registerRoutes(
     const { question, sac_thue, ai_model, promptBuilder, type, title, userId, res: response, style_references } = options;
 
     try {
-      // Step 1: Generate embedding for the question
-      let queryEmbedding: number[];
-      try {
-        queryEmbedding = await generateEmbedding(question);
-      } catch {
-        // Fallback: use zero vector if embedding fails
-        queryEmbedding = new Array(1536).fill(0);
-      }
-
-      // Step 2: Skip local DB chunk search (taxadvice DB has no chunks)
-      // All document search is handled via corpus DB in Step 2b below
-      let chunks: any[] = [];
-      let contextText = "Đang tìm kiếm trong kho văn bản pháp luật...";
-      let dbHasResults = false;
-
-      if (false) {
-        // Placeholder — local DB chunks not used
-        contextText = "";
-      }
-
-      // Step 2b: Corpus RAG — ANCHOR-FIRST search (Feature 1)
-      // Priority: search anchor documents first; only use Perplexity if corpus has < 3 chunks
-      let corpusContext = "";
-      let corpusChunkCount = 0;
+      // Step A: ALWAYS get anchor documents for the selected sac_thue first
+      let anchorListContext = "";
+      let anchorDocs: any[] = [];
       if (process.env.CORPUS_DATABASE_URL) {
         try {
-          // Ưu tiên chunks (RAG thật) từ anchor documents
-          const corpusChunks = await searchCorpusChunks(question, {
+          anchorDocs = await getAnchorDocuments(sac_thue);
+          if (anchorDocs.length > 0) {
+            const anchorLines = anchorDocs.map((doc: any) => {
+              const tinhTrang = doc.tinh_trang ? ` [${doc.tinh_trang}]` : "";
+              const sacThueStr = doc.sac_thue && doc.sac_thue.length > 0 ? ` (${doc.sac_thue.join(", ")})` : "";
+              return `• ${doc.so_hieu} — ${doc.ten}${tinhTrang}${sacThueStr}`;
+            });
+            anchorListContext = anchorLines.join("\n");
+            console.log(`[Anchor] Found ${anchorDocs.length} anchor documents for sac_thue: ${JSON.stringify(sac_thue)}`);
+          }
+        } catch (err) {
+          console.warn("Anchor document fetch failed (non-blocking):", (err as Error).message);
+        }
+      }
+
+      // Step B: Search corpus chunks from anchor documents for the specific question
+      // Try multiple search strategies: anchor-only first, then all docs if needed
+      let corpusContext = "";
+      let corpusChunkCount = 0;
+      let dbHasResults = false;
+
+      if (process.env.CORPUS_DATABASE_URL) {
+        try {
+          // Strategy 1: Search chunks from anchor documents only
+          let corpusChunks = await searchCorpusChunks(question, {
             sacThue: sac_thue,
-            limit: 8,
+            limit: 12,
             anchorOnly: true,
           });
+          console.log(`[Corpus] Anchor-only search: ${corpusChunks.length} chunks`);
+
+          // Strategy 2: If anchor-only returns few results, also search all documents
+          if (corpusChunks.length < 3) {
+            const allChunks = await searchCorpusChunks(question, {
+              sacThue: sac_thue,
+              limit: 12,
+              anchorOnly: false,
+            });
+            console.log(`[Corpus] All-docs search: ${allChunks.length} chunks`);
+            // Merge, deduplicate by chunk_id
+            const seenIds = new Set(corpusChunks.map(c => c.chunk_id));
+            for (const c of allChunks) {
+              if (!seenIds.has(c.chunk_id)) {
+                corpusChunks.push(c);
+                seenIds.add(c.chunk_id);
+              }
+            }
+          }
+
+          // Strategy 3: If FTS still returns nothing, try a broader keyword search
+          if (corpusChunks.length === 0) {
+            // Extract key tax terms from the question for a simpler search
+            const keywords = question.split(/\s+/).filter(w => w.length > 3).slice(0, 5).join(" | ");
+            if (keywords) {
+              try {
+                const broadChunks = await corpusPool.query(`
+                  SELECT c.id AS chunk_id, c.doc_id, c.so_hieu, d.ten, c.dieu_so, c.dieu_ten,
+                    c.header_path, c.text_content, d.link_tvpl, 0.1 AS rank
+                  FROM document_chunks c
+                  JOIN documents d ON d.id = c.doc_id
+                  WHERE d.is_anchor = TRUE AND d.tinh_trang = 'con_hieu_luc'
+                    ${sac_thue && sac_thue.length > 0 ? `AND d.sac_thue && $2::varchar[]` : ""}
+                    AND c.text_content ILIKE $1
+                  LIMIT 8
+                `, sac_thue && sac_thue.length > 0 
+                  ? [`%${question.split(/\s+/).filter(w => w.length > 3)[0]}%`, sac_thue]
+                  : [`%${question.split(/\s+/).filter(w => w.length > 3)[0]}%`]
+                );
+                corpusChunks.push(...broadChunks.rows);
+                console.log(`[Corpus] Broad ILIKE search: ${broadChunks.rows.length} chunks`);
+              } catch (e) {
+                console.warn("Broad search failed:", (e as Error).message);
+              }
+            }
+          }
 
           if (corpusChunks.length > 0) {
+            dbHasResults = true;
             corpusChunkCount = corpusChunks.length;
             const chunkLines = corpusChunks.map((c, i) => {
               const ref = c.dieu_so
                 ? ` — ${c.dieu_so}${c.dieu_ten ? `: ${c.dieu_ten}` : ""}`
                 : c.header_path ? ` — ${c.header_path}` : "";
-              const link = c.link_tvpl ? `\n   🔗 ${c.link_tvpl}` : "";
-              return `[${i+1}] ${c.so_hieu}${ref}\n${c.text_content.slice(0, 800)}${c.text_content.length > 800 ? "..." : ""}${link}`;
+              return `[Trích ${i+1}] ${c.so_hieu}${ref}\n${c.text_content.slice(0, 1000)}${c.text_content.length > 1000 ? "..." : ""}`;
             });
             corpusContext = chunkLines.join("\n\n");
-          } else {
-            // Fallback: document-level search if no chunk matches
-            const docResults = await searchCorpus(question, {
-              importanceMax: 2,
-              conHieuLuc: true,
-              limit: 5,
-              sacThue: sac_thue,
-            });
-            if (docResults.length > 0) {
-              const lines = docResults.map(r => {
-                const doc = r.doc as any;
-                const tomTat = doc.tom_tat ? `\nTóm tắt: ${doc.tom_tat}` : doc.ket_luan ? `\nKết luận: ${doc.ket_luan}` : "";
-                const link = doc.link_tvpl || doc.link_nguon ? `\nLink: ${doc.link_tvpl || doc.link_nguon}` : "";
-                return `[${doc.so_hieu}] ${doc.ten}${tomTat}${link}`;
-              });
-              corpusContext = lines.join("\n\n");
-              // Doc-level results are less reliable; don't count as full corpus hits
-              corpusChunkCount = 0;
-            }
           }
-
-          // Feature 1: set dbHasResults if corpusContext is non-empty
-          if (corpusContext && corpusContext.length > 0) {
-            dbHasResults = true;
-          }
+          console.log(`[Corpus] Final: ${corpusChunkCount} chunks found`);
         } catch (err) {
-          console.warn("Corpus search failed (non-blocking):", (err as Error).message);
+          console.warn("Corpus chunk search failed (non-blocking):", (err as Error).message);
         }
       }
 
-      // Step 2c: Perplexity internet research — ONLY if corpus has < 3 chunks or very short context
-      // Feature 1: anchor-first — only use Perplexity as fallback
+      // If we have anchor docs, that counts as having DB results even without chunk matches
+      if (anchorDocs.length > 0) {
+        dbHasResults = true;
+      }
+
+      // Step C: ONLY use Perplexity when corpus returns 0 chunks AND no anchor docs
       let internetContext: string | undefined;
       let perplexityCitations: string[] = [];
 
-      if (process.env.PERPLEXITY_API_KEY) {
-        const shouldSearchInternet = !dbHasResults || corpusChunkCount < 3 || corpusContext.length < 200;
-        if (shouldSearchInternet) {
-          try {
-            console.log(`[Perplexity] Corpus insufficient (${corpusChunkCount} chunks, ${corpusContext.length} chars), searching internet for: ${question.slice(0, 80)}...`);
-            const pplxResult = await searchWithPerplexity(question);
-            if (pplxResult && pplxResult.answer) {
-              internetContext = pplxResult.answer;
-              perplexityCitations = pplxResult.citations || [];
-              console.log(`[Perplexity] Found ${perplexityCitations.length} citations`);
-            }
-          } catch (err) {
-            console.warn("Perplexity search failed (non-blocking):", (err as Error).message);
+      if (process.env.PERPLEXITY_API_KEY && corpusChunkCount === 0 && anchorDocs.length === 0) {
+        try {
+          console.log(`[Perplexity] No corpus data at all, searching internet for: ${question.slice(0, 80)}...`);
+          const pplxResult = await searchWithPerplexity(question);
+          if (pplxResult && pplxResult.answer) {
+            internetContext = pplxResult.answer;
+            perplexityCitations = pplxResult.citations || [];
+            console.log(`[Perplexity] Found ${perplexityCitations.length} citations`);
           }
-        } else {
-          console.log(`[Corpus] Sufficient results (${corpusChunkCount} chunks, ${corpusContext.length} chars) — skipping Perplexity`);
+        } catch (err) {
+          console.warn("Perplexity search failed (non-blocking):", (err as Error).message);
         }
+      } else if (corpusChunkCount > 0 || anchorDocs.length > 0) {
+        console.log(`[Corpus] Has data (${corpusChunkCount} chunks, ${anchorDocs.length} anchor docs) — skipping Perplexity`);
       }
 
-      // Step 2d: Build style context from references
+      // Step D: Build style context from references
       const styleContext = await buildStyleContext(style_references);
 
-      // Step 3: Build prompt with DB context, corpus context, and internet context
-      let finalContextText = contextText;
-      if (corpusContext) {
-        finalContextText += `\n\n## Văn bản pháp luật liên quan:\n${corpusContext}`;
-      }
-      const systemPrompt = promptBuilder(finalContextText, internetContext, styleContext || undefined);
+      // Build final context:
+      // 1. If corpus chunks found → use as "QUY ĐỊNH CỤ THỂ LIÊN QUAN"
+      // 2. If internet used → include as supplement
+      // anchorListContext is ALWAYS included via promptBuilder
+      const finalContextText = corpusContext || "Không tìm thấy quy định cụ thể trong văn bản anchor. Hãy dựa vào danh sách văn bản pháp luật hiện hành được cung cấp.";
+      const internetCtx = internetContext;
+
+      const systemPrompt = promptBuilder(finalContextText, internetCtx, styleContext || undefined, anchorListContext || undefined);
 
       // Set up SSE for streaming
       response.setHeader("Content-Type", "text/event-stream");
@@ -487,13 +515,13 @@ export async function registerRoutes(
 
       // Send source info to frontend
       const sources: string[] = [];
-      if (dbHasResults) sources.push("corpus");
+      if (dbHasResults || anchorListContext) sources.push("corpus");
       if (internetContext) sources.push("internet");
       response.write(`data: ${JSON.stringify({ type: "sources", sources })}\n\n`);
 
       let fullContent = "";
 
-      const content = await streamLLM({
+      await streamLLM({
         model: ai_model,
         systemPrompt,
         userMessage: question,
@@ -503,17 +531,16 @@ export async function registerRoutes(
         },
       });
 
-      // Step 4: Save output with citations from both sources
-      const dbCitations = buildCitationsFromChunks(chunks);
-      // Add Perplexity web citations as a special citation type
+      // Save output with citations
+      // Web citations from Perplexity have url field; corpus/legal citations do NOT have url
       const webCitations = perplexityCitations.map((url, i) => ({
         document_id: 0,
         so_hieu: `Web ${i + 1}`,
-        article_ref: url,
+        article_ref: "",
         excerpt: "(Nguồn: internet - cần kiểm chứng)",
         url,
       }));
-      const allCitations = [...dbCitations, ...webCitations];
+      const allCitations = [...webCitations];
 
       const output = await storage.createOutput({
         user_id: userId,
@@ -527,8 +554,8 @@ export async function registerRoutes(
         metadata: {
           sources,
           perplexity_used: !!internetContext,
-          db_chunks_found: chunks.length,
           corpus_chunks_found: corpusChunkCount,
+          anchor_docs_found: anchorDocs.length,
         },
       });
 
@@ -546,6 +573,8 @@ export async function registerRoutes(
       }
     }
   }
+
+
 
   // Quick Q&A
   app.post("/api/ai/quick-qa", requireAuth, async (req, res) => {
